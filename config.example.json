@@ -1,9 +1,24 @@
 {
-  "display_mode": "calendar-agenda",
-  "calendar": {
-    "names": [],
-    "max_events": 4
+  "display_mode": "rotation",
+  "rotation": {
+    "pages": ["calendar-agenda", "stocks"],
+    "interval_seconds": 300
   },
+  "stocks": {
+    "datasource": "yfinance",
+    "proxy": null,
+    "timeout_seconds": 60,
+    "indices": [
+      {"zone": "US", "symbol": "^DJI", "name": "道琼斯"},
+      {"zone": "US", "symbol": "^GSPC", "name": "标普500"},
+      {"zone": "US", "symbol": "^IXIC", "name": "纳斯达克"},
+      {"zone": "CN", "symbol": "000001.SS", "name": "上证指数"},
+      {"zone": "CN", "symbol": "399006.SZ", "name": "创业板指"},
+      {"zone": "ASIA", "symbol": "^N225", "name": "日经225"},
+      {"zone": "ASIA", "symbol": "^KS11", "name": "韩国KOSPI"}
+    ]
+  },
+  "calendar": {"names": [], "max_events": 4},
   "sensor": {
     "file": "sensor-reading.json",
     "temperature_key": "temperature",

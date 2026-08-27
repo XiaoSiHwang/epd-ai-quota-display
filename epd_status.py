@@ -1092,7 +1092,7 @@ async def read_device_info(device):
 async def main():
     parser = argparse.ArgumentParser(description="Render quota, calendar/agenda, or calendar/sensor cards for an EPD-nRF5 display.")
     parser.add_argument("--config", default="config.json", help="optional JSON configuration file")
-    parser.add_argument("--mode", choices=("quota", "calendar-agenda", "calendar-sensor"), help="display layout")
+    parser.add_argument("--mode", choices=("quota", "calendar-agenda", "calendar-sensor", "rotation"), help="display layout")
     parser.add_argument("--name-prefix", default="NRF_EPD", help="advertised BLE name prefix")
     parser.add_argument("--width", type=int, default=400)
     parser.add_argument("--height", type=int, default=300)
@@ -1143,6 +1143,9 @@ async def main():
     calendar_config = config.get("calendar") or {}
     if not isinstance(calendar_config, dict):
         raise RuntimeError("The calendar configuration must be a JSON object.")
+    stocks_config = config.get("stocks") or {}
+    if not isinstance(stocks_config, dict):
+        raise RuntimeError("The stocks configuration must be a JSON object.")
 
     def configured(cli_value, env_name: str, config_value, default=None):
         if cli_value is not None:
@@ -1154,7 +1157,7 @@ async def main():
         return default
 
     mode = configured(args.mode, "EPD_DISPLAY_MODE", config.get("display_mode"), "quota")
-    if mode not in ("quota", "calendar-agenda", "calendar-sensor"):
+    if mode not in ("quota", "calendar-agenda", "calendar-sensor", "rotation"):
         raise RuntimeError(f"Unsupported display mode: {mode}")
 
     output = Path(args.output).expanduser() if args.output else Path(__file__).with_name("test-card.png")
@@ -1180,6 +1183,23 @@ async def main():
             return True
         return False
 
+    async def render_and_send(page_id: str, new_entry: dict, black_image,
+                              red_image, output_path: Path, scope_pages: list[str]):
+        """Pack planes, send over BLE when needed, persist state on success."""
+        black_payload = pack_monochrome(black_image)
+        red_payload = pack_monochrome(red_image) if red_image is not None else None
+        layer_count = 2 if red_payload is not None else 1
+        print(f"Rendered {output_path} ({len(black_payload)} bytes x "
+              f"{layer_count} layer{'s' if layer_count > 1 else ''})")
+        if args.dry_run:
+            return
+        await write_card_with_retry(args.name_prefix, black_payload, red_payload,
+                                    clear_first=args.clear_first)
+        stored = load_display_state_v2(state_path) or empty_display_state()
+        updated = merge_page_state(stored, active_pages=scope_pages,
+                                   current_page=page_id, new_entry=new_entry)
+        save_display_state_v2(state_path, updated)
+
     if args.fixed_test or args.calendar_test or args.device_calendar_temperature:
         black_image = build_test_card(args.width, args.height)
         red_image = None
@@ -1194,7 +1214,119 @@ async def main():
             return
         black_image, red_image, preview = build_quota_card(args.width, args.height, windows)
         preview.save(output)
-    elif mode == "calendar-agenda":
+        await render_and_send(mode, display_state, black_image, red_image, output, [mode])
+        return
+        black_image, red_image, preview = build_calendar_agenda_card(
+            args.width,
+            args.height,
+            weekly_window,
+            events,
+            now=card_now,
+        )
+        preview.save(output)
+        await render_and_send(mode, display_state, black_image, red_image, output, [mode])
+        return
+    elif mode == "rotation":
+        from rotation_state import (
+            normalize_rotation_config,
+            select_next_page,
+            validate_rotation_config,
+        )
+        from stocks_card import build_stocks_card
+        from stocks_data import StocksDataError, fetch_indices_async
+
+        validate_rotation_config(config)   # 先校验（含 interval 数值合法性）
+        pages, _interval = normalize_rotation_config(config)
+        candidate = select_next_page(load_display_state_v2(state_path), pages)
+        print(f"Rotation candidate page: {candidate}")
+
+        if args.output:
+            output = Path(args.output).expanduser()
+        elif args.dry_run:
+            output = Path(__file__).with_name(f"preview-{candidate}.png")
+
+        if candidate == "stocks":
+            fetched_at = datetime.now().astimezone()
+            try:
+                proxies_value = stocks_config.get("proxy")
+                quotes = await fetch_indices_async(
+                    stocks_config["indices"],
+                    proxy=proxies_value if isinstance(proxies_value, str) else None,
+                    timeout_seconds=float(stocks_config.get("timeout_seconds", 60)),
+                )
+                print("Fetched index quotes: " + ", ".join(
+                    f"{quote.name} {quote.price:.2f}" if not quote.unavailable else f"{quote.name} N/A"
+                    for quote in quotes
+                ))
+            except StocksDataError as exc:
+                print(f"Stocks page skipped this round: {exc}")
+                raise SystemExit(1)
+            display_state = stocks_display_state(quotes, fetched_at=fetched_at)
+            if unchanged(candidate, display_state):
+                return
+            black_image, red_image, preview = build_stocks_card(
+                args.width, args.height, quotes, now=fetched_at)
+            preview.save(output)
+            await render_and_send(candidate, display_state, black_image, red_image, output, pages)
+            return
+
+        # 其余候选页沿用对应的单模式数据路径；scope 为完整轮播页面清单
+        if candidate == "quota":
+            windows = fetch_codex_quota()
+            print("Fetched Codex usage windows: " + ", ".join(
+                f"{window['label']} {100 - window['used']:.0f}% left" for window in windows
+            ))
+            display_state = quota_display_state(windows)
+            render = build_quota_card(args.width, args.height, windows)
+        elif candidate == "calendar-agenda":
+            windows = fetch_codex_quota()
+            weekly_window = weekly_quota_window(windows)
+            configured_names = configured(args.calendar_name, "EPD_CALENDAR_NAMES", calendar_config.get("names"), [])
+            if isinstance(configured_names, str):
+                configured_names = [name.strip() for name in configured_names.split(",") if name.strip()]
+            agenda_limit = int(configured(args.agenda_limit, "EPD_AGENDA_LIMIT", calendar_config.get("max_events"), 4))
+            events = fetch_today_calendar_events(calendar_names=configured_names, max_events=agenda_limit)
+            print(f"Loaded {len(events)} event{'s' if len(events) != 1 else ''} from macOS Calendar for today.")
+            card_now = datetime.now().astimezone()
+            display_state = calendar_agenda_display_state(weekly_window, events, card_now)
+            render = build_calendar_agenda_card(args.width, args.height, weekly_window, events, now=card_now)
+        else:  # calendar-sensor
+            sensor_file = configured(args.sensor_file, "EPD_SENSOR_FILE", sensor_config.get("file"))
+            if sensor_file and not Path(sensor_file).expanduser().is_absolute() and config_path.exists():
+                sensor_file = str(config_path.resolve().parent / sensor_file)
+            max_age = float(configured(
+                args.max_sensor_age,
+                "EPD_MAX_SENSOR_AGE_MINUTES",
+                sensor_config.get("max_age_minutes"),
+                30,
+            ))
+            temperature_value = configured(args.temperature, "EPD_TEMPERATURE", sensor_config.get("temperature"))
+            humidity_value = configured(args.humidity, "EPD_HUMIDITY", sensor_config.get("humidity"))
+            reading = fetch_sensor_reading(
+                temperature=float(temperature_value) if temperature_value is not None else None,
+                humidity=float(humidity_value) if humidity_value is not None else None,
+                sensor_file=sensor_file,
+                sensor_url=configured(args.sensor_url, "EPD_SENSOR_URL", sensor_config.get("url")),
+                sensor_token=configured(args.sensor_token, "EPD_SENSOR_TOKEN", sensor_config.get("token")),
+                temperature_key=configured(args.temperature_key, "EPD_TEMPERATURE_KEY", sensor_config.get("temperature_key")),
+                humidity_key=configured(args.humidity_key, "EPD_HUMIDITY_KEY", sensor_config.get("humidity_key")),
+                timestamp_key=configured(args.timestamp_key, "EPD_TIMESTAMP_KEY", sensor_config.get("timestamp_key")),
+                max_age_minutes=max_age,
+                demo=args.demo_sensor,
+            )
+            location = str(configured(args.location, "EPD_SENSOR_LOCATION", sensor_config.get("location"), "室内"))
+            card_now = datetime.now().astimezone()
+            display_state = calendar_sensor_display_state(reading, location, card_now)
+            render = build_calendar_sensor_card(args.width, args.height, reading,
+                                                now=card_now, location=location)
+
+        if unchanged(candidate, display_state):
+            return
+        black_image, red_image, preview = render
+        preview.save(output)
+        await render_and_send(candidate, display_state, black_image, red_image, output, pages)
+        return
+    elif mode == "calendar-sensor":
         windows = fetch_codex_quota()
         weekly_window = weekly_quota_window(windows)
         remaining = 100 - weekly_window["used"]
@@ -1263,30 +1395,28 @@ async def main():
             location=location,
         )
         preview.save(output)
+        await render_and_send(mode, display_state, black_image, red_image, output, [mode])
+        return
+
+    # fixed-test / calendar-test / device-calendar-temperature 保留内联发送路径
     black_payload = pack_monochrome(black_image)
     red_payload = pack_monochrome(red_image) if red_image is not None else None
     layer_count = 2 if red_payload is not None else 1
     print(f"Rendered {output} ({len(black_payload)} bytes x {layer_count} layer{'s' if layer_count > 1 else ''})")
 
-    if args.dry_run:
-        return
     if args.calendar_test or args.device_calendar_temperature:
         device = await find_device(args.name_prefix)
         mode = 4 if args.device_calendar_temperature else 1
         mode_name = "calendar/temperature mode" if mode == 4 else "built-in calendar"
         await show_device_mode(device, mode, mode_name)
         return
-    await write_card_with_retry(
-        args.name_prefix,
-        black_payload,
-        red_payload,
-        clear_first=args.clear_first,
-    )
-    if display_state is not None:
-        stored = load_display_state_v2(state_path) or empty_display_state()
-        updated = merge_page_state(stored, active_pages=[mode],
-                                   current_page=mode, new_entry=display_state)
-        save_display_state_v2(state_path, updated)
+    if args.fixed_test:
+        await write_card_with_retry(
+            args.name_prefix,
+            black_payload,
+            red_payload,
+            clear_first=args.clear_first,
+        )
 
 
 if __name__ == "__main__":
