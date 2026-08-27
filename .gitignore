@@ -9,3 +9,4 @@ config.json
 sensor-reading.json
 .last-display-state.json
 .last-display-state.json.tmp
+.superpowers/
