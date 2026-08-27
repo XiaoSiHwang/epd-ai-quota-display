@@ -18,6 +18,7 @@ from urllib.request import Request, urlopen
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 from calendar_data import calendar_label, holiday_marker, solar_to_lunar
+from rotation_state import DISPLAY_STATE_VERSION
 
 SERVICE_UUID = "62750001-d828-918d-fb46-b6c11c675aec"
 CHARACTERISTIC_UUID = "62750002-d828-918d-fb46-b6c11c675aec"
@@ -29,7 +30,6 @@ CMD_WRITE_IMAGE = 0x30
 CMD_REFRESH = 0x05
 CMD_SET_TIME = 0x20
 CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
-DISPLAY_STATE_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -540,24 +540,6 @@ def calendar_agenda_display_state(
             for event in events
         ],
     }
-
-
-def load_display_state(path: Path) -> dict | None:
-    if not path.exists():
-        return None
-    try:
-        state = json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError) as exc:
-        print(f"Ignoring unreadable display state {path}: {exc}")
-        return None
-    return state if isinstance(state, dict) else None
-
-
-def save_display_state(path: Path, state: dict):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + ".tmp")
-    temporary.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n")
-    os.replace(temporary, path)
 
 
 def build_quota_card(width: int, height: int, windows: list[dict]) -> tuple[Image.Image, Image.Image, Image.Image]:
@@ -1153,10 +1135,20 @@ async def main():
     output.parent.mkdir(parents=True, exist_ok=True)
     display_state = None
 
-    def unchanged(state: dict) -> bool:
+    from rotation_state import (
+        empty_display_state,
+        load_display_state_v2,
+        merge_page_state,
+        save_display_state_v2,
+    )
+
+    def unchanged(page_id: str, new_entry: dict) -> bool:
         if args.dry_run or args.force:
             return False
-        if load_display_state(state_path) == state:
+        stored = load_display_state_v2(state_path)
+        if (stored
+                and stored.get("current_page") == page_id
+                and stored.get("pages", {}).get(page_id) == new_entry):
             print("No visible data change since the last successful refresh; skipping Bluetooth update.")
             return True
         return False
@@ -1171,7 +1163,7 @@ async def main():
             f"{window['label']} {100 - window['used']:.0f}% left" for window in windows
         ))
         display_state = quota_display_state(windows)
-        if unchanged(display_state):
+        if unchanged(mode, display_state):
             return
         black_image, red_image, preview = build_quota_card(args.width, args.height, windows)
         preview.save(output)
@@ -1192,7 +1184,7 @@ async def main():
 
         card_now = datetime.now().astimezone()
         display_state = calendar_agenda_display_state(weekly_window, events, card_now)
-        if unchanged(display_state):
+        if unchanged(mode, display_state):
             return
         black_image, red_image, preview = build_calendar_agenda_card(
             args.width,
@@ -1234,7 +1226,7 @@ async def main():
         )
         card_now = datetime.now().astimezone()
         display_state = calendar_sensor_display_state(reading, location, card_now)
-        if unchanged(display_state):
+        if unchanged(mode, display_state):
             return
         black_image, red_image, preview = build_calendar_sensor_card(
             args.width,
@@ -1264,8 +1256,10 @@ async def main():
         clear_first=args.clear_first,
     )
     if display_state is not None:
-        save_display_state(state_path, display_state)
-        print(f"Saved displayed state to {state_path}")
+        stored = load_display_state_v2(state_path) or empty_display_state()
+        updated = merge_page_state(stored, active_pages=[mode],
+                                   current_page=mode, new_entry=display_state)
+        save_display_state_v2(state_path, updated)
 
 
 if __name__ == "__main__":

@@ -14,15 +14,19 @@ from epd_status import (
     build_calendar_sensor_card,
     build_quota_card,
     calendar_agenda_display_state,
-    load_display_state,
     fetch_sensor_reading,
     pack_monochrome,
     parse_calendar_output,
     parse_sensor_reading,
     quota_display_state,
-    save_display_state,
     weekly_quota_window,
     write_card_with_retry,
+)
+from rotation_state import (
+    empty_display_state,
+    load_display_state_v2,
+    merge_page_state,
+    save_display_state_v2,
 )
 from calendar_data import calendar_label, holiday_marker, solar_to_lunar
 
@@ -131,13 +135,18 @@ class ExistingQuotaCardTests(unittest.TestCase):
         self.assertNotEqual(first, changed_percentage)
 
     def test_display_state_round_trip(self):
-        state = quota_display_state([
+        payload = quota_display_state([
             {"label": "7 DAYS", "used": 26, "reset_at": 1_800_086_400},
         ])
+        wrapped = merge_page_state(empty_display_state(),
+                                   active_pages=["quota"],
+                                   current_page="quota",
+                                   new_entry=payload)
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "state.json"
-            save_display_state(path, state)
-            self.assertEqual(load_display_state(path), state)
+            save_display_state_v2(path, wrapped)
+            loaded = load_display_state_v2(path)
+        self.assertEqual(loaded, wrapped)
 
 
 class CalendarAgendaTests(unittest.TestCase):
