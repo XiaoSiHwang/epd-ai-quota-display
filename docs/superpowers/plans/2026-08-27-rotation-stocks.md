@@ -15,7 +15,7 @@
 - venv 位于 `.venv`，Python 3.12。pip 安装必须带
   `--proxy http://127.0.0.1:7890 --cert /Users/leslie/Library/Python/3.9/lib/python/site-packages/certifi/cacert.pem`
   （该机器走本地代理出外网，venv 内 SSL 证书链缺失需显式指定 CA bundle）。
-  yfinance 已装好（1.7.0），requirements.txt 更新见 Task 3。
+  yfinance 已装好（1.7.0），requirements.txt 更新见 Task 2 Step 6。
 - 所有测试命令用 `.venv/bin/python -m pytest tests/ -v`。
 - 网络类手动验证命令前缀 `HTTPS_PROXY=http://127.0.0.1:7890 HTTP_PROXY=http://127.0.0.1:7890`。
 - 测试框架沿用项目现有 unittest 风格（class + self.assert*），pytest 只是运行器。
@@ -654,14 +654,19 @@ git commit -m "feat: add v2 nested display state with legacy discard-on-read"
 
 关键改动清单（对照 epd_status.py 当前实现）：
 
-1. **删除 v1 函数** `load_display_state()`（约 L545）和 `save_display_state()`（约 L556），
-   以及顶部 `DISPLAY_STATE_VERSION = 1` 常量（L32）—— 版本常量移到
-   rotation_state.py 统一管理。
-2. **删除主尾部旧保存点**：main() 结尾的
+1. **删除 v1 函数** `load_display_state()`（约 L545）和 `save_display_state()`（约 L556）。
+2. **版本常量改从 rotation_state 导入**：删除顶部
+   `DISPLAY_STATE_VERSION = 1` 常量（L32），在模块顶 import 区加
+   `from rotation_state import DISPLAY_STATE_VERSION` ——
+   `quota_display_state`（L503）、`calendar_sensor_display_state`（L511）、
+   `calendar_agenda_display_state`（L528）内部都引用该常量，保持引用不变即可，
+   构造函数本体无需修改。（同时删除 Task 4 Step 2 曾建议的 main() 内
+   `as STATE_VERSION  # noqa` 别名行 —— 不需要。）
+3. **删除主尾部旧保存点**：main() 结尾的
    `if display_state is not None: save_display_state(state_path, display_state)`
    （约 L1266-L1268）整段移除 —— 保存统一走新的 merge/save 模式，防止扁平载荷
    覆写嵌套状态导致 skip 机制永久失效。
-3. 各 `*_display_state()` 构造函数（quota/calendar_sensor/calendar_agenda）
+4. 各 `*_display_state()` 构造函数（quota/calendar_sensor/calendar_agenda）
    保持原样返回载荷字典（它们的键就是 v2 外壳内每页的条目内容）。
 
 - [ ] **Step 1: 先改 tests/test_epd_status.py 的导入**
@@ -706,7 +711,6 @@ main() 内原 `unchanged(state)` 闭包替换为按页比对版本：
     from rotation_state import (
         empty_display_state, load_display_state_v2, merge_page_state, save_display_state_v2,
     )
-    from rotation_state import DISPLAY_STATE_VERSION as STATE_VERSION  # noqa: F401
 
     # 原: display_state = None（变量保留，含义变为“当前页的可比载荷”）
     def unchanged(page_id: str, new_entry: dict) -> bool:
@@ -1173,7 +1177,49 @@ args/state_path 等），rotation 与单模式共用：
 从而 Task 4 Step 3 加过的尾部保存块被这次收编取代（不要留下双份保存点）。
 
 重要次序保持：`fixed_test` / `calendar_test` / `device_calendar_temperature`
-的特殊早退仍在渲染前分流，不走 render_and_send（它们不需要状态管理）。
+的特殊早退仍在渲染前分流，**它们保留现有内联的 pack/dry-run 判断/show_device_mode
+发送块，不走 render_and_send**（fixed-test 走既有图像发送路径，calendar/device
+走 show_device_mode；都不需要状态管理）。render_and_send 只收编三个单模式与
+rotation 的共用序列。
+
+**BLE 失败不变式测试**（追加到 tests/test_rotation_stocks.py，验证
+"写屏失败 → 状态文件字节不变"）：
+
+```python
+class BleFailureInvariantTests(unittest.IsolatedAsyncioTestCase):
+    async def test_write_failure_leaves_state_file_untouched(self):
+        import json as json_module
+        from unittest.mock import AsyncMock, patch
+        from pathlib import Path as PathT
+        # 直接测 merge/save 层面约定：write 失败时不调用 merge+save。
+        # main() 中的顺序保证（先 await write_card_with_retry 再 save）即此语义，
+        # 这里用 render_and_send 同构流程验证：
+        stored_before = {"version": 2, "current_page": "stocks", "pages": {"stocks": {}}}
+        with tempfile.TemporaryDirectory() as directory:
+            path = PathT(directory) / "state.json"
+            save_display_state_v2(path, stored_before)
+            before_bytes = path.read_bytes()
+            with patch("epd_status.write_card_with_retry",
+                       new_callable=AsyncMock,
+                       side_effect=RuntimeError("ble down")):
+                with self.assertRaises(RuntimeError):
+                    await _send_then_persist(path, active_pages=["stocks"],
+                                             page_id="stocks", entry={"mode": "stocks"})
+            self.assertEqual(path.read_bytes(), before_bytes,
+                             "failed BLE write must not touch the state file")
+
+
+async def _send_then_persist(state_path: Path, *, active_pages, page_id, entry):
+    """Mirrors render_and_send's ordering contract: write first, persist after."""
+    from epd_status import write_card_with_retry
+    await write_card_with_retry("NRF_EPD", b"x", None)
+    stored = load_display_state_v2(state_path) or empty_display_state()
+    save_display_state_v2(state_path, merge_page_state(
+        stored, active_pages=active_pages, current_page=page_id, new_entry=entry))
+```
+
+放在 render_and_send 实现完成后（Task 6 Step 4 之前执行亦可）；若直接对
+main() 内闭包测试困难，以 `_send_then_persist` 这一镜像函数固化次序契约。
 
 - [ ] **Step 3: rotation 分支本体**
 
@@ -1181,12 +1227,14 @@ args/state_path 等），rotation 与单模式共用：
 
 ```python
     elif mode == "rotation":
-        from rotation_state import select_next_page, validate_rotation_config
-        from stocks_data import fetch_indices_async
+        from rotation_state import (
+            normalize_rotation_config, select_next_page, validate_rotation_config,
+        )
+        from stocks_data import fetch_indices_async, StocksDataError
         from stocks_card import build_stocks_card
 
+        validate_rotation_config(config)   # 先校验（含 interval 数值合法性）
         pages, _interval = normalize_rotation_config(config)
-        validate_rotation_config(config)
         candidate = select_next_page(load_display_state_v2(state_path), pages)
         print(f"Rotation candidate page: {candidate}")
 
@@ -1248,6 +1296,7 @@ cat > /tmp/epd-test-config.json <<'EOF'
   "display_mode": "rotation",
   "rotation": {"pages": ["calendar-agenda", "stocks"], "interval_seconds": 300},
   "stocks": {
+    "datasource": "yfinance",
     "proxy": "http://127.0.0.1:7890",
     "timeout_seconds": 60,
     "indices": [
