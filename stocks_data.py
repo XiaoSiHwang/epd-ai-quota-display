@@ -25,6 +25,7 @@ class IndexQuote:
     currency: str | None = None
     unavailable: bool = False
     error: str | None = None
+    zone_label: str | None = None
 
 
 class StocksDataError(RuntimeError):
@@ -46,20 +47,23 @@ async def _quote_one(ticker_cls, entry: dict) -> IndexQuote:
         last = getattr(info, "last_price", None)
         prev = getattr(info, "previous_close", None)
         currency = getattr(info, "currency", None)
+        zone_label = entry.get("zone_label")
         if last is None or prev in (None, 0):
             return IndexQuote(entry["zone"], entry["symbol"], entry["name"],
                               None, None, currency, unavailable=True,
-                              error="quote provider returned no price")
+                              error="quote provider returned no price",
+                              zone_label=zone_label)
         return IndexQuote(entry["zone"], entry["symbol"], entry["name"],
                           float(last), (float(last) / float(prev) - 1) * 100,
-                          currency)
+                          currency, zone_label=zone_label)
 
     try:
         return await asyncio.wait_for(loop.run_in_executor(None, work), timeout=15)
     except Exception as exc:
         print(f"Index {entry['symbol']} unavailable: {exc}")
         return IndexQuote(entry["zone"], entry["symbol"], entry["name"],
-                          None, None, None, unavailable=True, error=str(exc))
+                          None, None, None, unavailable=True, error=str(exc),
+                          zone_label=entry.get("zone_label"))
 
 
 async def fetch_indices_async(

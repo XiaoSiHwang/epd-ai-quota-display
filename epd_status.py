@@ -542,6 +542,33 @@ def calendar_agenda_display_state(
     }
 
 
+def stocks_display_state(quotes: list, *, fetched_at: datetime) -> dict:
+    """Comparable visible state for the stocks page.
+
+    The fetch timestamp is deliberately excluded so unchanged market data
+    skips the BLE write; rendering still shows the timestamp on-screen
+    (spec §3.4: UPD reflects the last write's fetch time).
+    """
+    del fetched_at
+    rows = []
+    for quote in quotes:
+        rows.append({
+            "zone": quote.zone,
+            "zone_label": quote.zone_label,
+            "name": quote.name,
+            "price": _format_state_number(quote.price),
+            "change": _format_state_number(quote.change_pct),
+            "unavailable": bool(quote.unavailable),
+        })
+    return {"mode": "stocks", "rows": rows}
+
+
+def _format_state_number(value: float | None) -> str | None:
+    if value is None:
+        return None
+    return f"{value:.2f}"
+
+
 def build_quota_card(width: int, height: int, windows: list[dict]) -> tuple[Image.Image, Image.Image, Image.Image]:
     if (width, height) != (400, 300):
         raise ValueError("The approved quota layout currently targets the 400x300 panel.")

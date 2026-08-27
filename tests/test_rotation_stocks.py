@@ -3,10 +3,16 @@ import json
 import os
 import tempfile
 import unittest
+from datetime import datetime as dt
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import numpy as np
+
+from epd_status import pack_monochrome
 from stocks_data import IndexQuote
+
+STOCKS_NOW = dt.fromisoformat("2026-08-27T21:05:00+08:00")
 
 
 def _fake_fast_info(last, prev):
@@ -243,6 +249,79 @@ class DisplayStateV2Tests(unittest.TestCase):
         self.assertIn("quota", merged["pages"])        # 保留仍在管辖的条目
         self.assertEqual(merged["current_page"], "stocks")
         self.assertEqual(merged["pages"]["stocks"], {"mode": "stocks", "rows": []})
+
+
+class StocksCardTests(unittest.TestCase):
+    QUOTES = [
+        IndexQuote("US", "^DJI", "道琼斯", 44291.52, 0.35, "USD"),
+        IndexQuote("US", "^GSPC", "标普500", 6032.38, 0.20, "USD"),
+        IndexQuote("US", "^IXIC", "纳斯达克", 19269.39, -0.25, "USD"),
+        IndexQuote("CN", "000001.SS", "上证指数", 3387.38, 0.63, "CNY"),
+        IndexQuote("CN", "399006.SZ", "创业板指", 2299.31, 1.02, "CNY"),
+        IndexQuote("ASIA", "^N225", "日经225", 38283.85, 0.14, "JPY"),
+        IndexQuote("ASIA", "^KS11", "韩国KOSPI", 2653.45, -0.28, "KRW"),
+    ]
+
+    def test_card_planes_are_complete(self):
+        from stocks_card import build_stocks_card
+        black, red, preview = build_stocks_card(400, 300, self.QUOTES, now=STOCKS_NOW)
+        self.assertEqual(preview.size, (400, 300))
+        self.assertEqual(len(pack_monochrome(black)), 15_000)
+        self.assertEqual(len(pack_monochrome(red)), 15_000)
+
+    def test_up_quote_draws_dark_pixels_on_red_plane_only(self):
+        from stocks_card import build_stocks_card
+        up_quote = IndexQuote("US", "^DJI", "A指", 100.0, 0.50, "USD")
+        _, red, _ = build_stocks_card(400, 300, [up_quote], now=STOCKS_NOW)
+        dark_on_red = int((np.asarray(red.convert("L")) == 0).sum())
+        self.assertGreater(dark_on_red, 50,
+                           "up-quote pixels must be drawn dark on the red plane")
+
+    def test_down_and_flat_quotes_stay_off_red_plane(self):
+        from stocks_card import build_stocks_card
+        down_quote = IndexQuote("US", "^IXIC", "B指", 200.0, -0.50, "USD")
+        flat_quote = IndexQuote("US", "^GSPC", "C指", 300.0, 0.0, "USD")
+        black, red, _ = build_stocks_card(400, 300, [down_quote, flat_quote], now=STOCKS_NOW)
+        dark_on_red = int((np.asarray(red.convert("L")) == 0).sum())
+        self.assertEqual(dark_on_red, 0,
+                         "down/flat quotes must never touch the red plane")
+        dark_on_black = int((np.asarray(black.convert("L")) == 0).sum())
+        self.assertGreater(dark_on_black, 50)
+
+    def test_unavailable_row_placeholder(self):
+        from stocks_card import build_stocks_card
+        quotes = [IndexQuote("US", "^DJI", "X指", None, None, unavailable=True)]
+        black, red, _ = build_stocks_card(400, 300, quotes, now=STOCKS_NOW)
+        self.assertEqual(black.size, (400, 300))
+        self.assertEqual(red.size, (400, 300))
+
+    def test_zone_label_override_renders_custom_title(self):
+        # zone_label 由配置条目带来；渲染器通过 quote 附带字段显示
+        from stocks_card import build_stocks_card
+        quote = IndexQuote("UK", "^FTSE", "富时100", 8000.0, 0.10, "GBP",
+                           zone_label="UK · 英国")
+        black, _, _ = build_stocks_card(400, 300, [quote], now=STOCKS_NOW)
+        self.assertEqual(black.size, (400, 300))  # 自定义分区不崩、可渲染
+
+
+class StocksDisplayStateTests(unittest.TestCase):
+    def test_display_state_excludes_timestamp(self):
+        from epd_status import stocks_display_state
+        q1 = [IndexQuote("US", "^DJI", "道琼斯", 100.0, 0.50)]
+        s1 = stocks_display_state(q1, fetched_at=dt.fromisoformat("2026-08-27T21:00:00+08:00"))
+        s2 = stocks_display_state(q1, fetched_at=dt.fromisoformat("2026-08-27T21:05:00+08:00"))
+        self.assertEqual(s1, s2, "timestamp must not participate in comparison")
+
+    def test_display_state_reflects_price_availability_changes(self):
+        from epd_status import stocks_display_state
+        base = [IndexQuote("US", "^DJI", "道琼斯", 100.0, 0.50)]
+        moved = [IndexQuote("US", "^DJI", "道琼斯", 101.0, 1.50)]
+        gone = [IndexQuote("US", "^DJI", "道琼斯", None, None, unavailable=True)]
+        b = stocks_display_state(base, fetched_at=STOCKS_NOW)
+        m = stocks_display_state(moved, fetched_at=STOCKS_NOW)
+        g = stocks_display_state(gone, fetched_at=STOCKS_NOW)
+        self.assertNotEqual(b, m)
+        self.assertNotEqual(b, g)
 
 
 if __name__ == "__main__":
