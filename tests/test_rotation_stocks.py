@@ -324,5 +324,39 @@ class StocksDisplayStateTests(unittest.TestCase):
         self.assertNotEqual(b, g)
 
 
+class BleFailureInvariantTests(unittest.IsolatedAsyncioTestCase):
+    async def test_write_failure_leaves_state_file_untouched(self):
+        from unittest.mock import AsyncMock, patch as mock_patch
+        from rotation_state import (
+            empty_display_state,
+            load_display_state_v2,
+            merge_page_state,
+            save_display_state_v2,
+        )
+
+        async def send_then_persist(state_path: Path):
+            """Mirrors render_and_send's ordering contract: write first, persist after."""
+            from epd_status import write_card_with_retry
+            await write_card_with_retry("NRF_EPD", b"x", None)
+            stored = load_display_state_v2(state_path) or empty_display_state()
+            save_display_state_v2(state_path, merge_page_state(
+                stored, active_pages=["stocks"], current_page="stocks",
+                new_entry={"mode": "stocks"}))
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "state.json"
+            baseline = {"version": 2, "current_page": "stocks",
+                        "pages": {"stocks": {"mode": "stocks"}}}
+            save_display_state_v2(path, baseline)
+            before_bytes = path.read_bytes()
+            with mock_patch("epd_status.write_card_with_retry",
+                            new_callable=AsyncMock,
+                            side_effect=RuntimeError("ble down")):
+                with self.assertRaises(RuntimeError):
+                    await send_then_persist(path)
+            self.assertEqual(path.read_bytes(), before_bytes,
+                             "failed BLE write must not touch the state file")
+
+
 if __name__ == "__main__":
     unittest.main()

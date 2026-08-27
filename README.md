@@ -46,6 +46,7 @@ nRF52811 电子价签。设备独立日历温度模式需要刷入本项目配�
 | **可配置自动更新** | 使用 macOS 原生 `launchd` 后台运行，配额默认 30 分钟，环境页面建议 15 分钟。 |
 | **失败时保留上一帧** | 自动更新默认不预先清屏；蓝牙中途断开时保留旧画面，并自动重试一次完整图层。 |
 | **无变化不刷新** | 日期、周配额和今日日程均未变化时跳过 BLE 写入，减少闪屏和全刷次数。 |
+| **页面轮播** | `config.json` 的 `rotation.pages` 决定参与轮播的页面与顺序；每轮切向下一页，但页面可见内容未变时跳过写屏 —— 休市时段自然停住，减少闪屏。股票页数据来自 Yahoo Finance。 |
 | **完整中文教程** | 包含安装、BLE 协议、空白屏排查、实际验证记录和最终 HTML 设计稿。 |
 
 ## 显示内容
@@ -442,6 +443,17 @@ launchctl print gui/$(id -u)/com.local.epd-ai-quota-display
 tail -n 100 logs/update.log
 tail -n 100 logs/error.log
 ```
+
+启用轮播模式（`display_mode: "rotation"`）时，建议把 launchd 间隔调到与
+`rotation.interval_seconds` 一致，例如 5 分钟轮播：
+
+```zsh
+EPD_UPDATE_INTERVAL_SECONDS=300 ./scripts/install-launchagent.sh
+```
+
+股票指数页走 Yahoo Finance 国际行情，机器需要能访问外网；launchd 任务不继承
+终端环境变量，若需要代理请在 `config.json` 的 `stocks.proxy` 中显式配置。
+美股夜盘也要刷新的话，Mac 不能睡眠。
 
 卸载定时任务：
 
