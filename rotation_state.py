@@ -79,3 +79,53 @@ def select_next_page(state: dict | None, pages: list[str]) -> str:
         return pages[0]
     index = pages.index(current)
     return pages[(index + 1) % len(pages)]
+
+
+def empty_display_state() -> dict:
+    return {"version": DISPLAY_STATE_VERSION, "current_page": None, "pages": {}}
+
+
+def load_display_state_v2(path: Path) -> dict | None:
+    """Load nested display state; legacy/unknown layouts are discarded."""
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"Ignoring unreadable display state {path}: {exc}")
+        return None
+    if not (isinstance(payload, dict)
+            and payload.get("version") == DISPLAY_STATE_VERSION
+            and isinstance(payload.get("pages"), dict)):
+        print(f"Discarding legacy display-state layout at {path}; it will be rebuilt.")
+        return None
+    payload.setdefault("current_page", None)
+    return payload
+
+
+def save_display_state_v2(path: Path, state: dict):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2))
+    tmp.replace(path)
+
+
+def merge_page_state(
+    state: dict,
+    *,
+    active_pages: list[str],
+    current_page: str,
+    new_entry: dict,
+) -> dict:
+    """Keep entries still managed by this flow, drop removed ones, set the pointer."""
+    merged = {
+        "version": DISPLAY_STATE_VERSION,
+        "current_page": current_page,
+        "pages": {
+            page: entry
+            for page, entry in state.get("pages", {}).items()
+            if page in active_pages
+        },
+    }
+    merged["pages"][current_page] = new_entry
+    return merged

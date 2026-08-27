@@ -1,6 +1,9 @@
 # tests/test_rotation_stocks.py
+import json
 import os
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from stocks_data import IndexQuote
@@ -190,6 +193,56 @@ class SelectNextPageTests(unittest.TestCase):
     def test_state_without_current_page_key(self):
         from rotation_state import select_next_page
         self.assertEqual(select_next_page({}, ["a", "b"]), "a")
+
+
+class DisplayStateV2Tests(unittest.TestCase):
+    def test_round_trip_nested_state(self):
+        from rotation_state import load_display_state_v2, save_display_state_v2
+        state = {
+            "version": 2,
+            "current_page": "stocks",
+            "pages": {
+                "calendar-agenda": {"mode": "calendar-agenda", "date": "2026-08-27"},
+                "stocks": {"mode": "stocks", "rows": [{"name": "道琼斯"}]},
+            },
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "state.json"
+            save_display_state_v2(path, state)
+            self.assertEqual(load_display_state_v2(path), state)
+
+    def test_v1_flat_state_is_discarded(self):
+        from rotation_state import load_display_state_v2
+        legacy = {"version": 1, "mode": "quota", "windows": []}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "state.json"
+            path.write_text(json.dumps(legacy))
+            self.assertIsNone(load_display_state_v2(path))
+
+    def test_corrupt_file_is_discarded(self):
+        from rotation_state import load_display_state_v2
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "state.json"
+            path.write_text("not json{{{")
+            self.assertIsNone(load_display_state_v2(path))
+
+    def test_save_preserves_and_cleans_pages(self):
+        from rotation_state import merge_page_state
+        base = {
+            "version": 2,
+            "current_page": "a-page",
+            "pages": {
+                "quota": {"mode": "quota"},
+                "removed": {"mode": "stocks"},
+            },
+        }
+        merged = merge_page_state(base, active_pages=["quota", "stocks"],
+                                  current_page="stocks",
+                                  new_entry={"mode": "stocks", "rows": []})
+        self.assertNotIn("removed", merged["pages"])   # 清理已移除页
+        self.assertIn("quota", merged["pages"])        # 保留仍在管辖的条目
+        self.assertEqual(merged["current_page"], "stocks")
+        self.assertEqual(merged["pages"]["stocks"], {"mode": "stocks", "rows": []})
 
 
 if __name__ == "__main__":
