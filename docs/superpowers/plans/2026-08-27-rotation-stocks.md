@@ -21,7 +21,7 @@
 - 测试框架沿用项目现有 unittest 风格（class + self.assert*），pytest 只是运行器。
 - **测试文件组织**：本计划所有新代码的测试都追加到同一个文件
   `tests/test_rotation_stocks.py`；每个 Task 的 import 放在该 Task 指示的位置，
-  最终整个文件的 import 全部集中在文件顶部（Task 8 Step 3 会整理一次）。
+  最终整个文件的 import 全部集中在文件顶部（Task 7 Step 1 会整理一次）。
 
 ---
 
@@ -262,7 +262,7 @@ def select_next_page(state: dict | None, pages: list[str]) -> str:
 - [ ] **Step 4: 运行确认通过**
 
 Run: `.venv/bin/python -m pytest tests/test_rotation_stocks.py -v`
-Expected: 13 passed
+Expected: 15 passed
 
 - [ ] **Step 5: 提交**
 
@@ -798,8 +798,8 @@ git commit -m "feat: migrate single-mode flows to v2 nested display state"
 #   import numpy as np
 #   from datetime import datetime as dt
 #   from unittest.mock import patch
-# from epd_status import pack_monochrome  (已在别的区块? 统一放此处)
-# from stocks_data import IndexQuote      (Task 2 已加则不重复)
+# 务必在文件顶添加：from epd_status import pack_monochrome（此前均未导入）
+# 务必在文件顶添加：from stocks_data import IndexQuote（此前均未导入）
 
 STOCKS_NOW = dt.fromisoformat("2026-08-27T21:05:00+08:00")
 
@@ -1188,9 +1188,12 @@ rotation 的共用序列。
 ```python
 class BleFailureInvariantTests(unittest.IsolatedAsyncioTestCase):
     async def test_write_failure_leaves_state_file_untouched(self):
-        import json as json_module
         from unittest.mock import AsyncMock, patch
         from pathlib import Path as PathT
+        from rotation_state import (
+            empty_display_state, load_display_state_v2,
+            merge_page_state, save_display_state_v2,
+        )
         # 直接测 merge/save 层面约定：write 失败时不调用 merge+save。
         # main() 中的顺序保证（先 await write_card_with_retry 再 save）即此语义，
         # 这里用 render_and_send 同构流程验证：
@@ -1212,6 +1215,10 @@ class BleFailureInvariantTests(unittest.IsolatedAsyncioTestCase):
 async def _send_then_persist(state_path: Path, *, active_pages, page_id, entry):
     """Mirrors render_and_send's ordering contract: write first, persist after."""
     from epd_status import write_card_with_retry
+    from rotation_state import (
+        empty_display_state, load_display_state_v2,
+        merge_page_state, save_display_state_v2,
+    )
     await write_card_with_retry("NRF_EPD", b"x", None)
     stored = load_display_state_v2(state_path) or empty_display_state()
     save_display_state_v2(state_path, merge_page_state(

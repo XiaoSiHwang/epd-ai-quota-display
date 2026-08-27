@@ -89,10 +89,12 @@
 epd-ai-quota-display/
 ├── epd_status.py            # 入口：新增 rotation 模式分发
 ├── stocks_data.py           # 新增：行情获取层（可替换数据源）
-│                            #   fetch_indices(config) -> list[IndexQuote]
-│                            #   IndexQuote(name, price, change_pct, zone)
+│                            #   await fetch_indices_async(indices, proxy=...) -> list[IndexQuote]
+│                            #   IndexQuote(name, price, change_pct, zone,
+│                            #              currency, unavailable, zone_label)
 │                            #   yfinance 实现 + 统一错误类型 StocksDataError
-│                            #   优先一次批量 download() 取全部符号；
+│                            #   逐符号 fast_info 路径（批量 download 对部分
+│                            #   深证符号有 NaN 缺洞，实测不可用）；
 │                            #   总超时预算默认 60s（可配 stocks.timeout_seconds）。
 ├── stocks_card.py           # 新增：股票页渲染（纯函数 build_stocks_card）
 │                            #   黑/红双图层 + 合成预览图，与现有 card 函数签名一致
