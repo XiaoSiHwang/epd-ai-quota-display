@@ -4,9 +4,9 @@
 
 **Goal:** 在 EPD 电子价签上新增股票指数页（7 个全球指数，红涨黑跌，三列居中），并引入配置驱动的页面轮播机制（变化才切换策略 B）。
 
-**Architecture:** 三个新模块（`stocks_data.py` 行情层、`stocks_card.py` 渲染层、`rotation_state.py` 调度/状态层）+ `epd_status.py` 入口接入 rotation 分支。状态文件统一升级为 v2 嵌套结构 `{version, current_page, pages:{...}}`，四种模式共用。数据源用 yfinance 的逐符号 `fast_info` 路径（已实测：批量 `download()` 对部分深证符号有 NaN 缺洞，不可用）。
+**Architecture:** 三个新模块（`stocks_data.py` 行情层、`stocks_card.py` 渲染层、`rotation_state.py` 调度/状态层）+ `epd_status.py` 入口接入 rotation 分支。状态文件统一升级为 v2 嵌套结构 `{version, current_page, pages:{...}}`，四种模式共用；v1 读写函数删除。数据源用 yfinance 的逐符号 `fast_info` 路径（已实测：批量 `download()` 对部分深证符号有 NaN 缺洞，不可用）。行情获取只有 async 入口 `await fetch_indices_async(...)` —— `main()` 是 async 函数，禁止 asyncio.run 包装。
 
-**Tech Stack:** Python 3.12 / Pillow / yfinance 1.7.0（新增）/ bleak / unittest（项目现有测试风格）+ pytest 运行器
+**Tech Stack:** Python 3.12 / Pillow / yfinance 1.7.0（新增）/ bleak / numpy / unittest 风格测试 + pytest 运行器
 
 **Spec:** `docs/superpowers/specs/2026-08-27-rotation-stocks-design.md`
 
@@ -15,9 +15,13 @@
 - venv 位于 `.venv`，Python 3.12。pip 安装必须带
   `--proxy http://127.0.0.1:7890 --cert /Users/leslie/Library/Python/3.9/lib/python/site-packages/certifi/cacert.pem`
   （该机器走本地代理出外网，venv 内 SSL 证书链缺失需显式指定 CA bundle）。
+  yfinance 已装好（1.7.0），requirements.txt 更新见 Task 3。
 - 所有测试命令用 `.venv/bin/python -m pytest tests/ -v`。
 - 网络类手动验证命令前缀 `HTTPS_PROXY=http://127.0.0.1:7890 HTTP_PROXY=http://127.0.0.1:7890`。
 - 测试框架沿用项目现有 unittest 风格（class + self.assert*），pytest 只是运行器。
+- **测试文件组织**：本计划所有新代码的测试都追加到同一个文件
+  `tests/test_rotation_stocks.py`；每个 Task 的 import 放在该 Task 指示的位置，
+  最终整个文件的 import 全部集中在文件顶部（Task 8 Step 3 会整理一次）。
 
 ---
 
@@ -25,21 +29,26 @@
 
 | 文件 | 动作 | 职责 |
 | --- | --- | --- |
-| `stocks_data.py` | 新建 | IndexQuote 数据类、fetch_indices()（fast_info 逐符号）、StocksDataError、代理注入、部分失败降级 |
-| `stocks_card.py` | 新建 | build_stocks_card()：分区标题居中虚线、三列居中行、红涨黑跌双图层、unavailable 占位 |
-| `rotation_state.py` | 新建 | select_next_page() 纯函数调度器、load_display_state_v2()/save_display_state_v2()、旧格式兼容重置 |
-| `epd_status.py` | 修改 | DISPLAY_STATE_VERSION→2、单模式分支适配 v2 读写、rotation 模式分支、CLI 参数 |
+| `rotation_state.py` | 新建 | 常量源（VALID_PAGE_IDS/DISPLAY_STATE_VERSION）、select_next_page 纯函数、v2 状态读写、merge_page_state |
+| `stocks_data.py` | 新建 | IndexQuote 数据类、fetch_indices_async()（fast_info 逐符号）、StocksDataError、代理注入、部分失败降级 |
+| `stocks_card.py` | 新建 | build_stocks_card()：分区标题居中虚线（支持 zone_label 覆盖）、三列居中行、红涨黑跌双图层、unavailable 占位 |
+| `epd_status.py` | 修改 | 删除 v1 load/save_display_state；四个 display_state 载荷不变但由 v2 外壳承载；rotation 分支；stock page 状态函数 |
 | `config.example.json` | 修改 | 增加 rotation 与 stocks 示例段 |
-| `requirements.txt` | 修改 | 加 yfinance>=1.0 |
-| `tests/test_rotation_stocks.py` | 新建 | 全部新逻辑的单元测试 |
-| `tests/test_epd_status.py` | 修改 | display_state 往返测试适配 v2 |
+| `requirements.txt` | 修改 | 加 yfinance、numpy |
+| `tests/test_rotation_stocks.py` | 新建 | 全部新逻辑单元测试 |
+| `tests/test_epd_status.py` | 修改 | import 与往返测试适配 v2 |
+| `README.md` | 修改 | 轮播功能说明 |
+
+依赖方向：`epd_status.py → rotation_state.py / stocks_data.py / stocks_card.py`；
+`stocks_card.py → stocks_data.py`（类型）与 `epd_status.py`（font/text helpers，
+复用既有的 font()/text_right()/text_center()）。
 
 ---
 
-### Task 1: 配置校验函数（纯逻辑，无依赖）
+### Task 1: rotation_state.py — 常量 + 配置校验 + 调度器
 
 **Files:**
-- Modify: `epd_status.py`（在 `load_json_config` 之后插入）
+- Create: `rotation_state.py`
 - Test: `tests/test_rotation_stocks.py`（新建）
 
 - [ ] **Step 1: 写失败测试**
@@ -50,9 +59,8 @@ import unittest
 
 
 class RotationConfigValidationTests(unittest.TestCase):
-    def test_valid_stock_config_passes(self):
-        from epd_status import validate_rotation_config
-        config = {
+    def _valid_config(self):
+        return {
             "display_mode": "rotation",
             "rotation": {"pages": ["calendar-agenda", "stocks"], "interval_seconds": 300},
             "stocks": {
@@ -62,49 +70,98 @@ class RotationConfigValidationTests(unittest.TestCase):
                 ]
             },
         }
-        validate_rotation_config(config)  # should not raise
+
+    def test_valid_stock_config_passes(self):
+        from rotation_state import validate_rotation_config
+        validate_rotation_config(self._valid_config())  # should not raise
 
     def test_empty_pages_rejected(self):
-        from epd_status import validate_rotation_config
+        from rotation_state import validate_rotation_config
+        config = self._valid_config()
+        config["rotation"]["pages"] = []
         with self.assertRaisesRegex(RuntimeError, "pages"):
-            validate_rotation_config({"display_mode": "rotation", "rotation": {"pages": []}})
+            validate_rotation_config(config)
 
     def test_unknown_page_id_rejected(self):
-        from epd_status import validate_rotation_config
+        from rotation_state import validate_rotation_config
+        config = self._valid_config()
+        config["rotation"]["pages"] = ["calendar-agenda", "stock"]  # typo
         with self.assertRaisesRegex(RuntimeError, "Unsupported page"):
-            validate_rotation_config({
-                "display_mode": "rotation",
-                "rotation": {"pages": ["calendar-agenda", "stock"]},  # typo
-                "stocks": {"indices": [{"zone": "US", "symbol": "^DJI", "name": "D"}]},
-            })
+            validate_rotation_config(config)
 
     def test_duplicate_page_id_rejected(self):
-        from epd_status import validate_rotation_config
+        from rotation_state import validate_rotation_config
+        config = self._valid_config()
+        config["rotation"]["pages"] = ["stocks", "stocks"]
         with self.assertRaisesRegex(RuntimeError, "duplicate"):
-            validate_rotation_config({
-                "display_mode": "rotation",
-                "rotation": {"pages": ["stocks", "stocks"]},
-                "stocks": {"indices": [{"zone": "US", "symbol": "^DJI", "name": "D"}]},
-            })
+            validate_rotation_config(config)
 
     def test_stocks_page_requires_indices(self):
-        from epd_status import validate_rotation_config
+        from rotation_state import validate_rotation_config
+        config = {"display_mode": "rotation", "rotation": {"pages": ["stocks"]}}
         with self.assertRaisesRegex(RuntimeError, "stocks.indices"):
-            validate_rotation_config({"display_mode": "rotation", "rotation": {"pages": ["stocks"]}})
+            validate_rotation_config(config)
+
+    def test_invalid_index_entry_rejected(self):
+        from rotation_state import validate_rotation_config
+        config = self._valid_config()
+        config["stocks"]["indices"] = [{"zone": "US", "symbol": "^DJI"}]  # missing name
+        with self.assertRaisesRegex(RuntimeError, "zone, symbol and name"):
+            validate_rotation_config(config)
 
     def test_interval_below_60_rejected(self):
-        from epd_status import validate_rotation_config
+        from rotation_state import validate_rotation_config
+        config = self._valid_config()
+        config["rotation"]["interval_seconds"] = 30
         with self.assertRaisesRegex(RuntimeError, "interval_seconds"):
-            validate_rotation_config({
-                "display_mode": "rotation",
-                "rotation": {"pages": ["quota"], "interval_seconds": 30},
-            })
+            validate_rotation_config(config)
 
-    def test_missing_rotation_section_defaults_to_quota(self):
-        from epd_status import normalize_rotation_config
+    def test_interval_non_numeric_rejected(self):
+        from rotation_state import validate_rotation_config
+        config = self._valid_config()
+        config["rotation"]["interval_seconds"] = "abc"
+        with self.assertRaisesRegex(RuntimeError, "interval_seconds"):
+            validate_rotation_config(config)
+
+
+class NormalizeRotationConfigTests(unittest.TestCase):
+    def test_missing_section_defaults_to_quota(self):
+        from rotation_state import normalize_rotation_config
         pages, interval = normalize_rotation_config({})
         self.assertEqual(pages, ["quota"])
         self.assertIsNone(interval)
+
+    def test_present_values_pass_through(self):
+        from rotation_state import normalize_rotation_config
+        pages, interval = normalize_rotation_config({
+            "rotation": {"pages": ["stocks"], "interval_seconds": 900}
+        })
+        self.assertEqual(pages, ["stocks"])
+        self.assertEqual(interval, 900)
+
+
+class SelectNextPageTests(unittest.TestCase):
+    def test_first_run_returns_first_page(self):
+        from rotation_state import select_next_page
+        self.assertEqual(select_next_page(None, ["a", "b"]), "a")
+
+    def test_cyclic_advance(self):
+        from rotation_state import select_next_page
+        self.assertEqual(select_next_page({"current_page": "a"}, ["a", "b"]), "b")
+        self.assertEqual(select_next_page({"current_page": "b"}, ["a", "b"]), "a")
+
+    def test_removed_current_page_falls_back_to_first(self):
+        from rotation_state import select_next_page
+        self.assertEqual(select_next_page({"current_page": "gone"}, ["a", "b"]), "a")
+
+    def test_single_page_always_returns_itself_as_next_candidate(self):
+        # 调度器只决定候选页；是否写屏由“内容变化”决定
+        from rotation_state import select_next_page
+        self.assertEqual(select_next_page({"current_page": "a"}, ["a"]), "a")
+
+    def test_state_without_current_page_key(self):
+        from rotation_state import select_next_page
+        self.assertEqual(select_next_page({}, ["a", "b"]), "a")
 
 
 if __name__ == "__main__":
@@ -114,15 +171,21 @@ if __name__ == "__main__":
 - [ ] **Step 2: 运行确认失败**
 
 Run: `.venv/bin/python -m pytest tests/test_rotation_stocks.py -v`
-Expected: FAIL — `ImportError: cannot import name 'validate_rotation_config'`
+Expected: FAIL — `ModuleNotFoundError: No module named 'rotation_state'`
 
-- [ ] **Step 3: 实现校验与规范化**
+- [ ] **Step 3: 实现 rotation_state.py**
 
 ```python
-# epd_status.py — 在 load_json_config 函数之后添加
+"""Rotation scheduling and per-page display state management.
+
+Constants live here so every consumer imports one source of truth.
+"""
+
+import json
+from pathlib import Path
 
 VALID_PAGE_IDS = ("quota", "calendar-agenda", "calendar-sensor", "stocks")
-DEFAULT_ROTATION_INTERVAL = 300
+DISPLAY_STATE_VERSION = 2
 
 
 def validate_rotation_config(config: dict):
@@ -136,7 +199,7 @@ def validate_rotation_config(config: dict):
 
     pages = rotation.get("pages")
     if pages is None:
-        return  # normalized later by normalize_rotation_config; nothing to check
+        pages = ["quota"]
     if not isinstance(pages, list) or not pages:
         raise RuntimeError("rotation.pages must be a non-empty JSON array of page ids.")
     for page in pages:
@@ -147,12 +210,24 @@ def validate_rotation_config(config: dict):
     if "stocks" in pages:
         indices = stocks.get("indices")
         if not isinstance(indices, list) or not indices:
-            raise RuntimeError("rotation.pages includes 'stocks' but stocks.indices is missing or empty.")
+            raise RuntimeError(
+                "rotation.pages includes 'stocks' but stocks.indices is missing or empty."
+            )
         for entry in indices:
-            if not isinstance(entry, dict) or not entry.get("zone") or not entry.get("symbol") or not entry.get("name"):
-                raise RuntimeError("Each stocks.indices entry requires zone, symbol and name fields.")
+            if (not isinstance(entry, dict)
+                    or not entry.get("zone")
+                    or not entry.get("symbol")
+                    or not entry.get("name")):
+                raise RuntimeError(
+                    "Each stocks.indices entry requires zone, symbol and name fields."
+                )
 
-    interval = rotation.get("interval_seconds")
+    try:
+        interval = rotation.get("interval_seconds")
+        if interval is not None:
+            int(interval)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("rotation.interval_seconds must be an integer of seconds.") from exc
     if interval is not None and int(interval) < 60:
         raise RuntimeError("rotation.interval_seconds must be at least 60 seconds.")
 
@@ -165,78 +240,16 @@ def normalize_rotation_config(config: dict) -> tuple[list[str], int | None]:
     pages = rotation.get("pages")
     if pages is None or (isinstance(pages, list) and not pages):
         pages = ["quota"]
-    interval = rotation.get("interval_seconds")
-    interval = int(interval) if interval is not None else None
+    raw_interval = rotation.get("interval_seconds")
+    interval = int(raw_interval) if raw_interval is not None else None
     return list(pages), interval
-```
-
-- [ ] **Step 4: 运行确认通过**
-
-Run: `.venv/bin/python -m pytest tests/test_rotation_stocks.py -v`
-Expected: 7 passed
-
-- [ ] **Step 5: 提交**
-
-```bash
-git add tests/test_rotation_stocks.py epd_status.py
-git commit -m "feat: add rotation config validation"
-```
-
----
-
-### Task 2: select_next_page 调度器（纯函数）
-
-**Files:**
-- Create: `rotation_state.py`
-- Test: `tests/test_rotation_stocks.py`
-
-- [ ] **Step 1: 写失败测试（追加到测试文件）**
-
-```python
-class SelectNextPageTests(unittest.TestCase):
-    def test_first_run_returns_first_page(self):
-        from rotation_state import select_next_page
-        self.assertEqual(select_next_page(None, ["a", "b"]), "a")
-
-    def test_cyclic_advance(self):
-        from rotation_state import select_next_page
-        state = {"current_page": "a"}
-        self.assertEqual(select_next_page(state, ["a", "b"]), "b")
-        state2 = {"current_page": "b"}
-        self.assertEqual(select_next_page(state2, ["a", "b"]), "a")
-
-    def test_removed_current_page_falls_back_to_first(self):
-        from rotation_state import select_next_page
-        self.assertEqual(select_next_page({"current_page": "gone"}, ["a", "b"]), "a")
-
-    def test_single_page_always_returns_itself_as_next_candidate(self):
-        # 调度器只决定候选页；是否写屏由“内容变化”决定，这里语义无环
-        from rotation_state import select_next_page
-        self.assertEqual(select_next_page({"current_page": "a"}, ["a"]), "a")
-
-    def test_state_without_current_page_key(self):
-        from rotation_state import select_next_page
-        self.assertEqual(select_next_page({}, ["a", "b"]), "a")
-```
-
-- [ ] **Step 2: 运行确认失败**
-
-Run: `.venv/bin/python -m pytest tests/test_rotation_stocks.py::SelectNextPageTests -v`
-Expected: FAIL — `ModuleNotFoundError: No module named 'rotation_state'`
-
-- [ ] **Step 3: 实现 rotation_state.py（先只放调度器；Task 4 再补状态读写）**
-
-```python
-"""Rotation scheduling and per-page display state management."""
-
-VALID_PAGE_IDS = ("quota", "calendar-agenda", "calendar-sensor", "stocks")
 
 
 def select_next_page(state: dict | None, pages: list[str]) -> str:
     """Return the next candidate page id.
 
-    First run (no current_page) and pages that no longer exist both fall
-    back to the first configured page.
+    First run (no current_page) and removed pages both fall back to the
+    first configured page.
     """
     state = state or {}
     current = state.get("current_page")
@@ -248,37 +261,43 @@ def select_next_page(state: dict | None, pages: list[str]) -> str:
 
 - [ ] **Step 4: 运行确认通过**
 
-Run: `.venv/bin/python -m pytest tests/test_rotation_stocks.py::SelectNextPageTests -v`
-Expected: 5 passed
+Run: `.venv/bin/python -m pytest tests/test_rotation_stocks.py -v`
+Expected: 13 passed
 
 - [ ] **Step 5: 提交**
 
 ```bash
 git add rotation_state.py tests/test_rotation_stocks.py
-git commit -m "feat: add pure-function rotation scheduler"
+git commit -m "feat: add rotation config validation and pure scheduler"
 ```
 
 ---
 
-### Task 3: 股票行情获取层
+### Task 2: 股票行情获取层
 
 **Files:**
 - Create: `stocks_data.py`
+- Modify: `requirements.txt`
 - Test: `tests/test_rotation_stocks.py`
 
 设计要点（已实测确定的数据路径）：
 - 用 `yf.Ticker(symbol).fast_info` 逐符号取 `last_price` + `previous_close`，
   **不用批量 download()**（对 399006.SZ 等深证符号存在历史缺洞导致 NaN）。
-- 代理注入：模块导入 yfinance 前设置 os.environ（进程全局副作用，spec 已接受）。
+- 并发取数：`asyncio.gather` + executor，单符号超时 15s。
+- 代理注入：在首次 import yfinance 前设置 os.environ（进程全局副作用，spec 已接受；
+  该机器所有外部流量本就走同一代理）。
 - 单符号失败 → 该条目 unavailable=True；全部失败 → 抛 StocksDataError。
-- 总超时预算：每个 fast_info 访问天然带超时；函数级再加整体 wall-clock 保护。
+- **只提供 async 入口**：main() 是 async 函数，直接 await；
+  不提供 asyncio.run 包装（会撞 running loop）。
 
-- [ ] **Step 1: 写失败测试（追加）**
+- [ ] **Step 1: 写失败测试**
+
+追加到 `tests/test_rotation_stocks.py`：
 
 ```python
-import os
-from unittest.mock import MagicMock, patch
-
+# 文件顶部 import 区添加：
+#   import os
+#   from unittest.mock import MagicMock, patch
 
 def _fake_fast_info(last, prev):
     info = MagicMock()
@@ -288,21 +307,21 @@ def _fake_fast_info(last, prev):
     return info
 
 
-class StocksDataTests(unittest.TestCase):
+class StocksDataTests(unittest.IsolatedAsyncioTestCase):
     INDICES = [
         {"zone": "US", "symbol": "^DJI", "name": "道琼斯"},
         {"zone": "CN", "symbol": "000001.SS", "name": "上证指数"},
     ]
 
-    def _run_fetch(self, side_effect_fn, indices=None):
-        from stocks_data import fetch_indices
+    async def _run_fetch(self, side_effect_fn, indices=None, proxy=None):
+        from stocks_data import fetch_indices_async
         with patch("yfinance.Ticker", side_effect=side_effect_fn):
-            return fetch_indices(indices or self.INDICES)
+            return await fetch_indices_async(indices or self.INDICES, proxy=proxy)
 
-    def test_quotes_include_change_percent(self):
+    async def test_quotes_include_change_percent(self):
         t = MagicMock()
         t.fast_info = _fake_fast_info(53000.0, 52500.0)
-        quotes = self._run_fetch(lambda symbol: t)
+        quotes = await self._run_fetch(lambda symbol: t)
         self.assertEqual(len(quotes), 2)
         first = quotes[0]
         self.assertEqual(first.name, "道琼斯")
@@ -310,45 +329,47 @@ class StocksDataTests(unittest.TestCase):
         self.assertAlmostEqual(first.change_pct, (53000.0 / 52500.0 - 1) * 100, places=6)
         self.assertFalse(first.unavailable)
 
-    def test_partial_failure_marks_unavailable(self):
+    async def test_partial_failure_marks_unavailable(self):
         def broken_for_ss(symbol):
             t = MagicMock()
             if symbol == "000001.SS":
                 raise RuntimeError("boom")
             t.fast_info = _fake_fast_info(100.0, 99.0)
             return t
-        quotes = self._run_fetch(broken_for_ss)
+        quotes = await self._run_fetch(broken_for_ss)
         self.assertTrue(quotes[1].unavailable)
+        self.assertFalse(quotes[0].unavailable)
 
-    def test_all_failures_raise(self):
+    async def test_all_failures_raise(self):
         def always_broken(symbol):
             raise RuntimeError("network down")
         with self.assertRaisesRegex(RuntimeError, "network down"):
-            self._run_fetch(always_broken)
+            await self._run_fetch(always_broken)
 
-    def test_none_prices_marked_unavailable(self):
+    async def test_none_prices_marked_unavailable(self):
         t = MagicMock()
         t.fast_info = _fake_fast_info(None, None)
-        quotes = self._run_fetch(lambda symbol: t)
+        quotes = await self._run_fetch(lambda symbol: t)
         self.assertTrue(quotes[0].unavailable)
 
-    def test_proxy_env_injected_before_import_check(self):
-        # proxy 字段应在 fetch 时生效于 os.environ
-        from stocks_data import fetch_indices
+    async def test_proxy_env_injected(self):
+        from stocks_data import fetch_indices_async
         env_seen = {}
-        real_environ = dict(os.environ)
 
         def capture_env(symbol):
-            env_seen.update(HTTP_PROXY=os.environ.get("HTTP_PROXY"))
+            env_seen["HTTP_PROXY"] = os.environ.get("HTTP_PROXY")
             t = MagicMock()
             t.fast_info = _fake_fast_info(1.0, 1.0)
             return t
 
         with patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("HTTP_PROXY", None)
-            with patch("yfinance.Ticker", side_effect=capture_env):
-                fetch_indices([{"zone": "US", "symbol": "^DJI", "name": "D"}],
-                              proxy="http://127.0.0.1:7890")
+            saved = {k: os.environ.pop(k) for k in list(os.environ) if k.upper().endswith("_PROXY")}
+            try:
+                with patch("yfinance.Ticker", side_effect=capture_env):
+                    await fetch_indices_async([{"zone": "US", "symbol": "^DJI", "name": "D"}],
+                                              proxy="http://127.0.0.1:7890")
+            finally:
+                os.environ.update(saved)
         self.assertEqual(env_seen["HTTP_PROXY"], "http://127.0.0.1:7890")
 ```
 
@@ -362,10 +383,10 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'stocks_data'`
 ```python
 """Fetch global stock-index quotes for the EPD stocks page.
 
-The quote source is deliberately swappable: fetch_indices() is the only
+The quote source is deliberately swappable: fetch_indices_async() is the only
 entry point the renderer depends on. The default implementation uses
-yfinance's per-symbol fast_info path because batch downloads leave NaN
-gaps for Shenzhen-listed symbols.
+yfinance's per-symbol fast_info path because batch downloads leave NaN gaps
+for Shenzhen-listed symbols.
 """
 
 from __future__ import annotations
@@ -374,8 +395,7 @@ import asyncio
 import os
 from dataclasses import dataclass
 
-PROXY_ENV_KEYS = ("HTTP_PROXY", "HTTPS_PROXY",
-                  "http_proxy", "https_proxy")
+PROXY_ENV_KEYS = ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy")
 
 
 @dataclass(frozen=True)
@@ -402,21 +422,22 @@ def _apply_proxy(proxy: str | None):
 
 async def _quote_one(ticker_cls, entry: dict) -> IndexQuote:
     loop = asyncio.get_running_loop()
-    try:
-        def work():
-            info = ticker_cls(entry["symbol"]).fast_info
-            last = getattr(info, "last_price", None)
-            prev = getattr(info, "previous_close", None)
-            currency = getattr(info, "currency", None)
-            if last is None or prev in (None, 0):
-                return IndexQuote(entry["zone"], entry["symbol"], entry["name"],
-                                  None, None, currency, unavailable=True)
-            return IndexQuote(entry["zone"], entry["symbol"], entry["name"],
-                              float(last), (float(last) / float(prev) - 1) * 100,
-                              currency)
 
+    def work():
+        info = ticker_cls(entry["symbol"]).fast_info
+        last = getattr(info, "last_price", None)
+        prev = getattr(info, "previous_close", None)
+        currency = getattr(info, "currency", None)
+        if last is None or prev in (None, 0):
+            return IndexQuote(entry["zone"], entry["symbol"], entry["name"],
+                              None, None, currency, unavailable=True)
+        return IndexQuote(entry["zone"], entry["symbol"], entry["name"],
+                          float(last), (float(last) / float(prev) - 1) * 100,
+                          currency)
+
+    try:
         return await asyncio.wait_for(loop.run_in_executor(None, work), timeout=15)
-    except Exception as exc:  # noqa: BLE001 — single symbol failure degrades gracefully
+    except Exception as exc:
         print(f"Index {entry['symbol']} unavailable: {exc}")
         return IndexQuote(entry["zone"], entry["symbol"], entry["name"],
                           None, None, None, unavailable=True)
@@ -428,7 +449,7 @@ async def fetch_indices_async(
     proxy: str | None = None,
     timeout_seconds: float = 60,
 ) -> list[IndexQuote]:
-    """Fetch all configured indices; partial failures degrade to unavailable rows."""
+    """Fetch all configured indices concurrently; partial failures degrade to unavailable rows."""
     _apply_proxy(proxy)
     import yfinance  # after proxy injection, per spec §3.6
 
@@ -440,50 +461,40 @@ async def fetch_indices_async(
     if all(quote.unavailable for quote in results):
         raise StocksDataError("All requested indices failed to fetch a quote.")
     return list(results)
-
-
-def fetch_indices(
-    indices: list[dict],
-    *,
-    proxy: str | None = None,
-    timeout_seconds: float = 60,
-) -> list[IndexQuote]:
-    """Synchronous wrapper used by the script's async main()."""
-    return asyncio.run(fetch_indices_async(indices, proxy=proxy,
-                                           timeout_seconds=timeout_seconds))
 ```
 
-注：测试里 `patch("yfinance.Ticker", ...)` 生效的前提是 `_apply_proxy` 后的
-`import yfinance` 在每次调用时重新解析属性 —— 以上实现把 import 放在函数体内、
-再取 `yfinance.Ticker` 属性引用，符合 patch 目标 `"yfinance.Ticker"`。
+测试里 `patch("yfinance.Ticker")` 能生效的原因：import 写在函数体内且每次调用
+解析属性引用，patch 替换的是 yfinance 模块对象的 Ticker 属性。
 
 - [ ] **Step 4: 运行确认通过**
 
 Run: `.venv/bin/python -m pytest tests/test_rotation_stocks.py::StocksDataTests -v`
 Expected: 5 passed
 
-- [ ] **Step 5: 手动烟雾验证真实网络路径（可选但推荐）**
+- [ ] **Step 5: 手动烟雾验证真实网络路径**
 
 ```bash
 HTTPS_PROXY=http://127.0.0.1:7890 HTTP_PROXY=http://127.0.0.1:7890 \
   .venv/bin/python -c "
-from stocks_data import fetch_indices
-quotes = fetch_indices([
+import asyncio
+from stocks_data import fetch_indices_async
+quotes = asyncio.run(fetch_indices_async([
     {'zone':'US','symbol':'^DJI','name':'道琼斯'},
     {'zone':'CN','symbol':'000001.SS','name':'上证指数'},
-], proxy='http://127.0.0.1:7890')
+], proxy='http://127.0.0.1:7890'))
 for q in quotes: print(q)
 "
 ```
 
 Expected: 两行真实报价，change_pct 与财经网站当日数值一致。
 
-- [ ] **Step 6: 更新 requirements.txt 并提交**
+- [ ] **Step 6: requirements.txt 追加两行后提交**
 
 ```
 bleak>=1.0.0
 Pillow>=10.0.0
 yfinance>=1.0.0
+numpy>=1.26
 ```
 
 ```bash
@@ -493,19 +504,21 @@ git commit -m "feat: add yfinance-based index quote layer"
 
 ---
 
-### Task 4: v2 状态文件读写与迁移
+### Task 3: v2 状态文件读写与迁移
 
 **Files:**
 - Modify: `rotation_state.py`
-- Modify: `epd_status.py`（仅加常量 `DISPLAY_STATE_VERSION = 2`）
 - Test: `tests/test_rotation_stocks.py`
 
-- [ ] **Step 1: 写失败测试（追加）**
+- [ ] **Step 1: 写失败测试**
+
+追加到 `tests/test_rotation_stocks.py`：
 
 ```python
-import json
-import tempfile
-from pathlib import Path
+# 文件顶部 import 区添加：
+#   import json
+#   import tempfile
+#   from pathlib import Path
 
 
 class DisplayStateV2Tests(unittest.TestCase):
@@ -540,7 +553,7 @@ class DisplayStateV2Tests(unittest.TestCase):
             self.assertIsNone(load_display_state_v2(path))
 
     def test_save_preserves_and_cleans_pages(self):
-        from rotation_state import merge_page_state, save_display_state_v2, load_display_state_v2
+        from rotation_state import merge_page_state
         base = {
             "version": 2,
             "current_page": "a-page",
@@ -556,12 +569,6 @@ class DisplayStateV2Tests(unittest.TestCase):
         self.assertIn("quota", merged["pages"])        # 保留仍在管辖的条目
         self.assertEqual(merged["current_page"], "stocks")
         self.assertEqual(merged["pages"]["stocks"], {"mode": "stocks", "rows": []})
-
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "state.json"
-            save_display_state_v2(path, merged)
-            loaded = load_display_state_v2(path)
-        self.assertEqual(loaded, merged)
 ```
 
 - [ ] **Step 2: 运行确认失败**
@@ -569,26 +576,11 @@ class DisplayStateV2Tests(unittest.TestCase):
 Run: `.venv/bin/python -m pytest tests/test_rotation_stocks.py::DisplayStateV2Tests -v`
 Expected: FAIL — ImportError
 
-- [ ] **Step 3: 实现状态读写**
+- [ ] **Step 3: 实现状态读写（追加到 rotation_state.py）**
 
 ```python
-# rotation_state.py — 追加
-
-import json
-from pathlib import Path
-
-DISPLAY_STATE_VERSION = 2
-
-
-def _display_state_path_kind(payload) -> str:
-    """Classify an on-disk payload: 'v2' | 'v1' | 'unknown'."""
-    if not isinstance(payload, dict):
-        return "unknown"
-    if payload.get("version") == 2 and isinstance(payload.get("pages"), dict):
-        return "v2"
-    if "mode" in payload:  # pre-rotation single-mode layout
-        return "v1"
-    return "unknown"
+def empty_display_state() -> dict:
+    return {"version": DISPLAY_STATE_VERSION, "current_page": None, "pages": {}}
 
 
 def load_display_state_v2(path: Path) -> dict | None:
@@ -600,9 +592,10 @@ def load_display_state_v2(path: Path) -> dict | None:
     except (OSError, json.JSONDecodeError) as exc:
         print(f"Ignoring unreadable display state {path}: {exc}")
         return None
-    kind = _display_state_path_kind(payload)
-    if kind != "v2":
-        print(f"Discarding legacy display-state format ({kind}); it will be rebuilt.")
+    if not (isinstance(payload, dict)
+            and payload.get("version") == DISPLAY_STATE_VERSION
+            and isinstance(payload.get("pages"), dict)):
+        print(f"Discarding legacy display-state layout at {path}; it will be rebuilt.")
         return None
     payload.setdefault("current_page", None)
     return payload
@@ -613,11 +606,6 @@ def save_display_state_v2(path: Path, state: dict):
     tmp = path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2))
     tmp.replace(path)
-    print(f"Saved displayed state to {path}")
-
-
-def empty_display_state() -> dict:
-    return {"version": DISPLAY_STATE_VERSION, "current_page": None, "pages": {}}
 
 
 def merge_page_state(
@@ -641,9 +629,6 @@ def merge_page_state(
     return merged
 ```
 
-同时把 `epd_status.py` 顶部 `DISPLAY_STATE_VERSION = 1` 改为 `2`
-（旧模式的 `*_display_state()` 生成载荷本身不变，嵌套进 v2 外壳）。
-
 - [ ] **Step 4: 运行确认通过**
 
 Run: `.venv/bin/python -m pytest tests/test_rotation_stocks.py::DisplayStateV2Tests -v`
@@ -652,32 +637,167 @@ Expected: 4 passed
 - [ ] **Step 5: 提交**
 
 ```bash
-git add rotation_state.py epd_status.py tests/test_rotation_stocks.py
-git commit -m "feat: add v2 nested display state with v1 discard-on-read migration"
+git add rotation_state.py tests/test_rotation_stocks.py
+git commit -m "feat: add v2 nested display state with legacy discard-on-read"
 ```
 
 ---
 
-### Task 5: stocks 页可比状态与渲染
+### Task 4: epd_status.py 接入 v2 —— 单模式分支改造
+
+此任务把现有 main() 的状态逻辑整体切到 v2。**改完后三种单模式行为必须与现在
+完全一致（跳过语义不变），全量旧测试通过。**
+
+**Files:**
+- Modify: `epd_status.py`
+- Test: `tests/test_epd_status.py`
+
+关键改动清单（对照 epd_status.py 当前实现）：
+
+1. **删除 v1 函数** `load_display_state()`（约 L545）和 `save_display_state()`（约 L556），
+   以及顶部 `DISPLAY_STATE_VERSION = 1` 常量（L32）—— 版本常量移到
+   rotation_state.py 统一管理。
+2. **删除主尾部旧保存点**：main() 结尾的
+   `if display_state is not None: save_display_state(state_path, display_state)`
+   （约 L1266-L1268）整段移除 —— 保存统一走新的 merge/save 模式，防止扁平载荷
+   覆写嵌套状态导致 skip 机制永久失效。
+3. 各 `*_display_state()` 构造函数（quota/calendar_sensor/calendar_agenda）
+   保持原样返回载荷字典（它们的键就是 v2 外壳内每页的条目内容）。
+
+- [ ] **Step 1: 先改 tests/test_epd_status.py 的导入**
+
+从 import 块中删掉 `load_display_state` 和 `save_display_state` 两项，
+改为在文件头补上：
+
+```python
+from rotation_state import (
+    empty_display_state,
+    load_display_state_v2,
+    merge_page_state,
+    save_display_state_v2,
+)
+```
+
+并把 `test_display_state_round_trip` 整个替换为：
+
+```python
+    def test_display_state_round_trip(self):
+        payload = quota_display_state([
+            {"label": "7 DAYS", "used": 26, "reset_at": 1_800_086_400},
+        ])
+        wrapped = merge_page_state(empty_display_state(),
+                                   active_pages=["quota"],
+                                   current_page="quota",
+                                   new_entry=payload)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "state.json"
+            save_display_state_v2(path, wrapped)
+            loaded = load_display_state_v2(path)
+        self.assertEqual(loaded, wrapped)
+```
+
+其余三个 quota/calendar 状态构造测试不动。
+
+- [ ] **Step 2: 改造 main() 的状态读取与比对**
+
+main() 内原 `unchanged(state)` 闭包替换为按页比对版本：
+
+```python
+    from rotation_state import (
+        empty_display_state, load_display_state_v2, merge_page_state, save_display_state_v2,
+    )
+    from rotation_state import DISPLAY_STATE_VERSION as STATE_VERSION  # noqa: F401
+
+    # 原: display_state = None（变量保留，含义变为“当前页的可比载荷”）
+    def unchanged(page_id: str, new_entry: dict) -> bool:
+        if args.dry_run or args.force:
+            return False
+        stored = load_display_state_v2(state_path)
+        if (stored
+                and stored.get("current_page") == page_id
+                and stored.get("pages", {}).get(page_id) == new_entry):
+            print("No visible data change since the last successful refresh; skipping Bluetooth update.")
+            return True
+        return False
+```
+
+各单模式分支的判定调用相应从 `unchanged(display_state)` 改为
+`unchanged(mode, display_state)`：
+
+- quota 分支：`if unchanged(mode, quota_display_state(windows)): return`（先赋值 display_state 再判定，顺序不变）
+- calendar-agenda 分支：同构替换
+- calendar-sensor 分支：同构替换
+
+- [ ] **Step 3: 替换保存点**
+
+main() 尾部（原 L1266 处）改为：
+
+```python
+    if display_state is not None and not args.dry_run:
+        stored = load_display_state_v2(state_path) or empty_display_state()
+        updated = merge_page_state(stored, active_pages=[mode],
+                                   current_page=mode, new_entry=display_state)
+        save_display_state_v2(state_path, updated)
+```
+
+注意位置：这段必须在 `write_card_with_retry(...)` 成功之后执行（保持原尾部的
+先后顺序）；`fixed_test` / `calendar_test` / `device_calendar_temperature` 早退
+路径不携带 display_state（它们本来就是 None 或提前 return），不受影响。
+
+- [ ] **Step 4: 全量回归**
+
+Run: `.venv/bin/python -m pytest tests/ -v`
+Expected: 原 15 个测试 + 新增任务测试全部通过
+
+再手动冒烟一次旧行为未破坏：
+
+```bash
+HTTPS_PROXY=http://127.0.0.1:7890 HTTP_PROXY=http://127.0.0.1:7890 \
+  .venv/bin/python epd_status.py --dry-run && .venv/bin/python --version
+```
+
+Expected: 正常生成 test-card.png（网络可达时含真实配额数据；不可达则报错退出属正常）。
+
+- [ ] **Step 5: 提交**
+
+```bash
+git add epd_status.py tests/test_epd_status.py
+git commit -m "feat: migrate single-mode flows to v2 nested display state"
+```
+
+---
+
+### Task 5: 股票页渲染 + 可比状态
 
 **Files:**
 - Create: `stocks_card.py`
-- Modify: `epd_status.py`（添加 `stocks_display_state()`，紧邻其他 `*_display_state` 函数）
+- Modify: `epd_status.py`（新增 `stocks_display_state()`，紧邻其他 `*_display_state`）
 - Test: `tests/test_rotation_stocks.py`
 
-渲染规格（来自 spec §3.7 与用户确认的 mockup）：
+渲染规格（spec §3.7 + 用户定稿 mockup）：
 - 400×300 双图层；黑层承载基础文字与下跌元素；红层叠画上涨价格与涨幅。
-- 三列水平居中：名称列中心 x≈100、价格列 x≈210、涨跌列 x≈310。
-- 分区标题两侧虚线夹持、水平居中。
+- 三列水平居中：名称列中心 x≈100、价格列 x≈200、涨跌列 x≈310。
+- 分区标题两侧虚线夹持、水平居中；条目可选 `zone_label` 字段覆盖分区标题。
 - 上涨 ▲ 红、下跌 ▼ 黑、平盘黑色 ±0.00%；unavailable 行画"—"占位。
 - 无图例行；顶部左"GLOBAL INDICES"、右上 UPD 时间。
 - **UPD 时间戳绝不进入可比状态**（否则跳过逻辑永不触发）。
+- preview 合成用项目既有模式：
+  `preview.paste((23, 21, 19), mask=ImageOps.invert(black.convert("L")))`、
+  红 `(188, 46, 46)`（与 build_quota_card/build_calendar_*_card 一致）。
 
-- [ ] **Step 1: 写失败测试（追加）**
+- [ ] **Step 1: 写失败测试**
+
+追加到 `tests/test_rotation_stocks.py`：
 
 ```python
-from datetime import datetime as _dt
-from stocks_data import IndexQuote
+# 文件顶部 import 区添加：
+#   import numpy as np
+#   from datetime import datetime as dt
+#   from unittest.mock import patch
+# from epd_status import pack_monochrome  (已在别的区块? 统一放此处)
+# from stocks_data import IndexQuote      (Task 2 已加则不重复)
+
+STOCKS_NOW = dt.fromisoformat("2026-08-27T21:05:00+08:00")
 
 
 class StocksCardTests(unittest.TestCase):
@@ -693,58 +813,95 @@ class StocksCardTests(unittest.TestCase):
 
     def test_card_planes_are_complete(self):
         from stocks_card import build_stocks_card
-        now = _dt.fromisoformat("2026-08-27T21:05:00+08:00")
-        black, red, preview = build_stocks_card(400, 300, self.QUOTES, now=now)
+        black, red, preview = build_stocks_card(400, 300, self.QUOTES, now=STOCKS_NOW)
         self.assertEqual(preview.size, (400, 300))
         self.assertEqual(len(pack_monochrome(black)), 15_000)
         self.assertEqual(len(pack_monochrome(red)), 15_000)
 
-    def test_up_goes_to_red_plane_down_to_black_plane(self):
+    def test_up_quote_draws_dark_pixels_on_red_plane_only(self):
         from stocks_card import build_stocks_card
-        now = _dt.fromisoformat("2026-08-27T21:05:00+08:00")
-        black, red, _ = build_stocks_card(400, 300, [
-            IndexQuote("US", "^DJI", "A指", 100.0, 0.50, "USD"),
-            IndexQuote("US", "^IXIC", "B指", 200.0, -0.50, "USD"),
-        ], now=now)
-        import numpy as np
-        up_rows_red = np.asarray(red).sum()
-        down_rows_black = np.asarray(black).sum()
-        # 涨幅值应画在红层（红层有内容）；跌幅画在黑层（黑层有内容）
-        self.assertGreater(int(up_rows_red), 0, "red plane should contain the up-quote pixels")
-        self.assertGreater(int(down_rows_black), 0, "black plane should contain the down-quote pixels")
+        up_quote = IndexQuote("US", "^DJI", "A指", 100.0, 0.50, "USD")
+        _, red, _ = build_stocks_card(400, 300, [up_quote], now=STOCKS_NOW)
+        dark_on_red = int((np.asarray(red.convert("L")) == 0).sum())
+        self.assertGreater(dark_on_red, 50,
+                           "up-quote pixels must be drawn dark on the red plane")
+
+    def test_down_and_flat_quotes_stay_off_red_plane(self):
+        from stocks_card import build_stocks_card
+        down_quote = IndexQuote("US", "^IXIC", "B指", 200.0, -0.50, "USD")
+        flat_quote = IndexQuote("US", "^GSPC", "C指", 300.0, 0.0, "USD")
+        black, red, _ = build_stocks_card(400, 300, [down_quote, flat_quote], now=STOCKS_NOW)
+        dark_on_red = int((np.asarray(red.convert("L")) == 0).sum())
+        self.assertEqual(dark_on_red, 0,
+                         "down/flat quotes must never touch the red plane")
+        dark_on_black = int((np.asarray(black.convert("L")) == 0).sum())
+        self.assertGreater(dark_on_black, 50)
 
     def test_unavailable_row_placeholder(self):
         from stocks_card import build_stocks_card
         quotes = [IndexQuote("US", "^DJI", "X指", None, None, unavailable=True)]
-        black, _, _ = build_stocks_card(400, 300, quotes,
-                                        now=_dt.fromisoformat("2026-08-27T21:05:00+08:00"))
-        self.assertEqual(black.size, (400, 300))  # 渲染不崩即可，细节人工校验
+        black, red, _ = build_stocks_card(400, 300, quotes, now=STOCKS_NOW)
+        self.assertEqual(black.size, (400, 300))
+        self.assertEqual(red.size, (400, 300))
 
+    def test_zone_label_override_renders_custom_title(self):
+        # zone_label 由配置条目带来；渲染器通过 quotes 附带字段显示
+        from stocks_card import build_stocks_card
+        quote = IndexQuote("UK", "^FTSE", "富时100", 8000.0, 0.10, "GBP",
+                           zone_label="UK · 英国")
+        black, _, _ = build_stocks_card(400, 300, [quote], now=STOCKS_NOW)
+        self.assertEqual(black.size, (400, 300))  # 自定义分区不崩、可渲染
+
+
+class StocksDisplayStateTests(unittest.TestCase):
     def test_display_state_excludes_timestamp(self):
         from epd_status import stocks_display_state
         q1 = [IndexQuote("US", "^DJI", "道琼斯", 100.0, 0.50)]
-        s1 = stocks_display_state(q1, fetched_at=_dt.fromisoformat("2026-08-27T21:00:00+08:00"))
-        s2 = stocks_display_state(q1, fetched_at=_dt.fromisoformat("2026-08-27T21:05:00+08:00"))
+        s1 = stocks_display_state(q1, fetched_at=dt.fromisoformat("2026-08-27T21:00:00+08:00"))
+        s2 = stocks_display_state(q1, fetched_at=dt.fromisoformat("2026-08-27T21:05:00+08:00"))
         self.assertEqual(s1, s2, "timestamp must not participate in comparison")
 
-    def test_display_state_reflects_price_and_availability_changes(self):
+    def test_display_state_reflects_price_availability_changes(self):
         from epd_status import stocks_display_state
         base = [IndexQuote("US", "^DJI", "道琼斯", 100.0, 0.50)]
         moved = [IndexQuote("US", "^DJI", "道琼斯", 101.0, 1.50)]
         gone = [IndexQuote("US", "^DJI", "道琼斯", None, None, unavailable=True)]
-        b = stocks_display_state(base, fetched_at=_dt.fromisoformat("2026-08-27T21:00:00+08:00"))
-        m = stocks_display_state(moved, fetched_at=_dt.fromisoformat("2026-08-27T21:00:00+08:00"))
-        g = stocks_display_state(gone, fetched_at=_dt.fromisoformat("2026-08-27T21:00:00+08:00"))
+        b = stocks_display_state(base, fetched_at=STOCKS_NOW)
+        m = stocks_display_state(moved, fetched_at=STOCKS_NOW)
+        g = stocks_display_state(gone, fetched_at=STOCKS_NOW)
         self.assertNotEqual(b, m)
         self.assertNotEqual(b, g)
 ```
 
+注：`IndexQuote` 需要 `zone_label` 可选字段 —— 计入 Task 2 的实现调整，
+此时回头补一行并在该 Task 测试确认。
+
 - [ ] **Step 2: 运行确认失败**
 
-Run: `.venv/bin/python -m pytest tests/test_rotation_stocks.py::StocksCardTests -v`
-Expected: FAIL — ImportError（stocks_card 不存在）
+Run: `.venv/bin/python -m pytest tests/test_rotation_stocks.py::StocksCardTests tests/test_rotation_stocks.py::StocksDisplayStateTests -v`
+Expected: FAIL — ImportError（stocks_card 不存在 / zone_label 字段不存在）
 
-- [ ] **Step 3: 实现 stocks_card.py**
+- [ ] **Step 3: 给 IndexQuote 补 zone_label 字段**
+
+`stocks_data.py` 的 dataclass 增加：
+
+```python
+@dataclass(frozen=True)
+class IndexQuote:
+    zone: str
+    symbol: str
+    name: str
+    price: float | None
+    change_pct: float | None
+    currency: str | None = None
+    unavailable: bool = False
+    zone_label: str | None = None     # optional per-entry partition title override
+```
+
+同时在 `_quote_one` 里把 `entry.get("zone_label")` 透传到所有 IndexQuote 构造处
+（成功与 unavailable 两路都要带），避免覆盖值丢失。
+
+- [ ] **Step 4: 实现 stocks_card.py**
 
 ```python
 """Render the 400x300 tri-color stock-index page.
@@ -758,9 +915,9 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageOps
 
-from epd_status import font, text_center  # reuse established helpers
+from epd_status import font, text_right
 
 ZONE_TITLES = {
     "US": "US · 美股",
@@ -778,19 +935,22 @@ META_FONT_SIZE = 10
 
 
 def _group_zones(quotes):
-    """Preserve first-seen zone order; collect consecutive same-zone rows."""
+    """Preserve first-seen zone order; collect rows per zone."""
     zones: list[str] = []
     grouped: dict[str, list] = {}
+    labels: dict[str, str] = {}
     for quote in quotes:
         zone = quote.zone
         if zone not in grouped:
             grouped[zone] = []
             zones.append(zone)
+            labels[zone] = quote.zone_label or ZONE_TITLES.get(zone, zone)
         grouped[zone].append(quote)
-    return [(zone, grouped[zone]) for zone in zones]
+    return [(zone, labels[zone], grouped[zone]) for zone in zones]
 
 
-def _draw_dashed_hline(draw: ImageDraw.ImageDraw, x1: int, x2: int, y: int, dash: int = 3, gap: int = 3):
+def _draw_dashed_hline(draw: ImageDraw.ImageDraw, x1: int, x2: int, y: int,
+                       dash: int = 3, gap: int = 3):
     x = x1
     while x < x2:
         end = min(x + dash, x2)
@@ -798,7 +958,8 @@ def _draw_dashed_hline(draw: ImageDraw.ImageDraw, x1: int, x2: int, y: int, dash
         x = end + gap
 
 
-def _centered_text(draw: ImageDraw.ImageDraw, cx: int, y: int, text: str, text_font, fill=0):
+def _centered_text(draw: ImageDraw.ImageDraw, cx: int, y: int, text: str,
+                   text_font, fill=0):
     left, top, right, bottom = draw.textbbox((0, 0), text, font=text_font)
     width = right - left
     draw.text((cx - width // 2 - left, y), text, font=text_font, fill=fill)
@@ -807,14 +968,12 @@ def _centered_text(draw: ImageDraw.ImageDraw, cx: int, y: int, text: str, text_f
 def _fmt_price(price: float | None) -> str:
     if price is None:
         return "—"
-    if abs(price) >= 10_000:
-        return f"{price:,.2f}"
-    return f"{price:.2f}"
+    return f"{price:,.2f}"
 
 
-def _fmt_change(change_pct: float | None, unavailable: bool) -> str:
-    if unavailable or change_pct is None:
-        return ""
+def _fmt_change(change_pct: float | None) -> str | None:
+    if change_pct is None:
+        return None
     arrow = "▲" if change_pct > 0 else ("▼" if change_pct < 0 else "")
     if not arrow:
         return "±0.00%"
@@ -845,71 +1004,47 @@ def build_stocks_card(
     meta_font = font(META_FONT_SIZE)
 
     col_name = 100
-    col_price = 210
-    col_change = 315
+    col_price = 200
+    col_change = 310
 
     black_draw.text((CANVAS_MARGIN, 12), "GLOBAL INDICES", font=title_font, fill=0)
-    upd = "UPD " + now.strftime("%H:%M")
-    right, _top, _r2, _b2 = black_draw.textbbox((0, 0), upd, font=meta_font)
-    black_draw.text((width - CANVAS_MARGIN - (right - _r2 if False else _r2 - right if False else _r2), 14),
-                    upd, font=meta_font, fill=0)  # simplified below
-    # —— 实现注释：右对齐统一用 epd_status.text_right 更简洁，
-    # 执行者应直接改为：
-    #     from epd_status import text_right
-    #     text_right(black_draw, width - CANVAS_MARGIN, 14, upd, meta_font)
-    # 上面三行允许删除。
-
+    text_right(black_draw, width - CANVAS_MARGIN, 14,
+               "UPD " + now.strftime("%H:%M"), meta_font)
     black_draw.line((CANVAS_MARGIN, 34, width - CANVAS_MARGIN, 34), fill=0, width=2)
 
     row_height = 27
     zone_band = 24
-    y = 44
     max_y = height - 12
-    for zone, rows in _group_zones(quotes):
-        label = ZONE_TITLES.get(zone, zone)
-        label_w = zone_font.getbbox(label)[2]
-        cy = y + 8
-        _draw_dashed_hline(black_draw, CANVAS_MARGIN, (width - label_w) // 2 - 8, cy)
-        _draw_dashed_hline(black_draw, (width + label_w) // 2 + 8, width - CANVAS_MARGIN, cy)
+    y = 44
+    for zone, label, rows in _group_zones(quotes):
+        label_width = zone_font.getbbox(label)[2]
+        dashed_y = y + zone_band // 2 - 4
+        _draw_dashed_hline(black_draw, CANVAS_MARGIN, width // 2 - label_width // 2 - 8, dashed_y)
+        _draw_dashed_hline(black_draw, width // 2 + label_width // 2 + 8, width - CANVAS_MARGIN, dashed_y)
         _centered_text(black_draw, width // 2, y, label, zone_font)
         y += zone_band
         for quote in rows:
             if y + row_height > max_y:
                 break
             _centered_text(black_draw, col_name, y, quote.name, name_font)
-            price_text = _fmt_price(quote.price)
-            change_text = _fmt_change(quote.change_pct, quote.unavailable)
-            plane_up = quote.change_pct is not None and quote.change_pct > 0 and not quote.unavailable
-            price_draw = red_draw if plane_up else black_draw
-            change_draw = red_draw if plane_up else black_draw
-            _centered_text(price_draw, col_price, y - 1, price_text, price_font)
-            if change_text:
-                _centered_text(change_draw, col_change, y + 2, change_text, change_font)
-            elif quote.unavailable:
+            if quote.unavailable:
                 _centered_text(black_draw, col_price, y - 1, "—", price_font)
+                _centered_text(black_draw, col_change, y + 2, "unavailable", change_font)
+            else:
+                going_up = quote.change_pct is not None and quote.change_pct > 0
+                price_plane = red_draw if going_up else black_draw
+                _centered_text(price_plane, col_price, y - 1,
+                               _fmt_price(quote.price), price_font)
+                change_text = _fmt_change(quote.change_pct)
+                if change_text:
+                    _centered_text(price_plane, col_change, y + 2, change_text, change_font)
             y += row_height
 
     preview = Image.new("RGB", (width, height), (251, 250, 246))
-    white_bg = Image.new("1", (width, height), 1)
-    preview.paste(Image.new("RGB", (width, height), (28, 28, 28)),
-                  mask=Image.eval(black, lambda px: 255 - px))
-    preview.paste(Image.new("RGB", (width, height), (192, 32, 32)),
-                  mask=Image.eval(red, lambda px: 255 - px))
-    del white_bg
+    preview.paste((23, 21, 19), mask=ImageOps.invert(black.convert("L")))
+    preview.paste((188, 46, 46), mask=ImageOps.invert(red.convert("L")))
     return black, red, preview
 ```
-
-> 执行者注意：上面 `build_stocks_card` 里 UPD 右对齐那段是有意保留的粗糙注释块 ——
-> 请直接按注释中的说明用 `text_right()` 替换为干净的一行实现；
-> `white_bg` 占位变量同理可删。这是为了确保你逐行阅读而不是盲目粘贴。
-> 
-> `preview` 合成顺序参照 `build_calendar_sensor_card` 的既有做法
-> （先黑后红叠加到米白底图）—— 打开 `epd_status.py` 相应函数核对并保持一致。
-
-- [ ] **Step 4: 运行确认通过**
-
-Run: `.venv/bin/python -m pytest tests/test_rotation_stocks.py::StocksCardTests -v`
-Expected: 5 passed
 
 - [ ] **Step 5: 实现 epd_status.py 里的 stocks_display_state（追加在 calendar_agenda_display_state 之后）**
 
@@ -918,16 +1053,19 @@ def stocks_display_state(quotes: list, *, fetched_at: datetime) -> dict:
     """Comparable visible state for the stocks page.
 
     The fetch timestamp is deliberately excluded so unchanged market data
-    skips the BLE write; rendering still shows the timestamp on-screen.
+    skips the BLE write; rendering still shows the timestamp on-screen
+    (spec §3.4: UPD reflects the last write's fetch time).
     """
-    del fetched_at  # excluded from comparison by design (see spec §3.4)
+    del fetched_at
     rows = []
     for quote in quotes:
         rows.append({
             "zone": quote.zone,
+            "zone_label": quote.zone_label,
             "name": quote.name,
-            "price": None if quote.unavailable else _format_state_number(quote.price),
-            "change": None if quote.unavailable else _format_state_number(quote.change_pct),
+            "price": _format_state_number(quote.price),
+            "change": _format_state_number(quote.change_pct),
+            "unavailable": bool(quote.unavailable),
         })
     return {"mode": "stocks", "rows": rows}
 
@@ -938,9 +1076,12 @@ def _format_state_number(value: float | None) -> str | None:
     return f"{value:.2f}"
 ```
 
-再跑一遍 Step 4 的测试确认全绿。
+- [ ] **Step 6: 运行确认通过**
 
-- [ ] **Step 6: 渲染视觉人工校验**
+Run: `.venv/bin/python -m pytest tests/test_rotation_stocks.py -v`
+Expected: 本阶段全部通过（含此前任务的）
+
+- [ ] **Step 7: 渲染视觉人工校验**
 
 ```bash
 .venv/bin/python -c "
@@ -963,228 +1104,151 @@ print('saved')
 open /tmp/stocks-preview.png
 ```
 
-对照头脑风暴定稿 mockup 核对：三列居中、红涨黑跌、无双列越界、分区虚线完整。
+对照头脑风暴定稿 mockup 核对：三列居中、红涨黑跌、分区虚线完整、无越界。
+微调行距/字号允许，但每次改后重跑测试。
 
-- [ ] **Step 7: 提交**
+- [ ] **Step 8: 提交**
 
 ```bash
-git add stocks_card.py epd_status.py tests/test_rotation_stocks.py
-git commit -m "feat: add stocks card renderer and comparable display state"
+git add stocks_card.py stocks_data.py epd_status.py tests/test_rotation_stocks.py
+git commit -m "feat: add stocks card renderer with comparable display state"
 ```
 
 ---
 
-### Task 6: epd_status.py 接入 rotation 分支与单模式 v2 适配
-
-这是集成任务：修改入口 main()。**分两个子步骤，每步后全量跑测试。**
+### Task 6: rotation 模式接入 main()
 
 **Files:**
-- Modify: `epd_status.py`（main()、unchanged()、四个模式的保存点）
+- Modify: `epd_status.py`（CLI choices、运行时 gate、rotation 分支、公共渲染发送路径重构）
+- Test: 手动冒烟为主（调度纯函数已测；集成安全网 = 全量回归 + 冒烟步骤）
 
-- [ ] **Step 1: 适配单模式分支为 v2 读写**
+前置事实（对照现实现）：
+- argparse choices 在 L1086：`parser.add_argument("--mode", choices=("quota", "calendar-agenda", "calendar-sensor"), ...)`；
+- **运行时 gate 在 L1148**：`if mode not in ("quota", "calendar-agenda", "calendar-sensor"): raise ...` —— 两处都必须加 `"rotation"`，漏掉 gate 则一切 rotation 调用在分支前就崩；
+- `sensor_config`/`calendar_config` 提取防护在 L1131–1136，stocks 同样要加；
+- mode 解析链：`mode = configured(args.mode, "EPD_DISPLAY_MODE", config.get("display_mode"), "quota")`，rotation 不需要动这行，只要 gate 元组扩容。
 
-改造 `main()` 中现有的状态逻辑：
-
-```python
-# main() 内：
-from rotation_state import (
-    empty_display_state, load_display_state_v2, merge_page_state,
-    save_display_state_v2,
-)
-
-state_path = ...  # 保持原有路径推导
-
-# 旧 unchanged(display_state) 闭包替换为按页比对版本：
-def unchanged(page_id: str, new_entry: dict, display_state: dict | None) -> bool:
-    if args.dry_run or args.force:
-        return False
-    stored = load_display_state_v2(state_path)
-    if stored and stored.get("current_page") == page_id:
-        if stored.get("pages", {}).get(page_id) == new_entry:
-            print("No visible data change since the last successful refresh; skipping Bluetooth update.")
-            return True
-    del display_state
-    return False
-```
-
-单模式三个分支的写屏成功后保存段统一改为：
+- [ ] **Step 1: CLI 与 gate 扩容 + stocks 配置提取**
 
 ```python
-if display_state is not None and not args.dry_run:
-    stored = load_display_state_v2(state_path) or empty_display_state()
-    mode_pages = [mode]  # 单模式下本分支只管辖自身页
-    updated = merge_page_state(stored, active_pages=[mode],
-                               current_page=mode, new_entry=display_state)
-    save_display_state_v2(state_path, updated)
+# argparse:
+    parser.add_argument("--mode", choices=("quota", "calendar-agenda", "calendar-sensor", "rotation"), help="display layout")
+
+# gate:
+    mode = configured(args.mode, "EPD_DISPLAY_MODE", config.get("display_mode"), "quota")
+    if mode not in ("quota", "calendar-agenda", "calendar-sensor", "rotation"):
+        raise RuntimeError(f"Unsupported display mode: {mode}")
+
+# 配置提取（紧跟 sensor/calendar_config 后）：
+    stocks_config = config.get("stocks") or {}
+    if not isinstance(stocks_config, dict):
+        raise RuntimeError("The stocks configuration must be a JSON object.")
 ```
 
-注意：原代码 `save_display_state(...)` 调用点和 `display_state = quota_display_state(windows)` /
-`unchanged(display_state)` 判定点都要相应改为传 `(mode, display_state)`。
+- [ ] **Step 2: 抽出 render_and_send 公共路径**
 
-calendar-sensor 和 calendar-agenda 分支里原有的 `calendar_*_display_state(...)`
-返回值继续作为 `new_entry` 使用（其内部键不动，评审确认过语义等价）。
+把 main() 尾部现有的 pack/dry-run/BLE 序列抽成闭包或局部函数（仍持有
+args/state_path 等），rotation 与单模式共用：
 
-- [ ] **Step 2: 更新旧测试适配 v2**
+```python
+    async def render_and_send(page_id: str, new_entry: dict, black_image, red_image,
+                              output_path: Path, scope_pages: list[str]):
+        """Pack planes, send over BLE when needed, persist state on success."""
+        black_payload = pack_monochrome(black_image)
+        red_payload = pack_monochrome(red_image) if red_image is not None else None
+        layer_count = 2 if red_payload is not None else 1
+        print(f"Rendered {output_path} ({len(black_payload)} bytes x "
+              f"{layer_count} layer{'s' if layer_count > 1 else ''})")
+        if args.dry_run:
+            return
+        await write_card_with_retry(args.name_prefix, black_payload, red_payload,
+                                    clear_first=args.clear_first)
+        stored = load_display_state_v2(state_path) or empty_display_state()
+        updated = merge_page_state(stored, active_pages=scope_pages,
+                                   current_page=page_id, new_entry=new_entry)
+        save_display_state_v2(state_path, updated)
+```
 
-`tests/test_epd_status.py` 中 `test_display_state_round_trip` 直接调用的是
-`save_display_state/load_display_state`（v1 函数）。v1 函数此时已被移除或被
-改名为 v2，因此把该测试改为导入 `save_display_state_v2/load_display_state_v2`
-并用 v2 结构断言往返一致。
+单模式三分支的尾部相应改为调用它（active_pages=[mode]、page_id=mode），
+从而 Task 4 Step 3 加过的尾部保存块被这次收编取代（不要留下双份保存点）。
 
-- [ ] **Step 3: 全量回归**
+重要次序保持：`fixed_test` / `calendar_test` / `device_calendar_temperature`
+的特殊早退仍在渲染前分流，不走 render_and_send（它们不需要状态管理）。
 
-Run: `.venv/bin/python -m pytest tests/ -v`
-Expected: 原 12 个测试 + 新增全部通过
+- [ ] **Step 3: rotation 分支本体**
 
-- [ ] **Step 4: 提交**
+插在最后的 else 前面（即 mode == "rotation" 的 elif 分支）：
+
+```python
+    elif mode == "rotation":
+        from rotation_state import select_next_page, validate_rotation_config
+        from stocks_data import fetch_indices_async
+        from stocks_card import build_stocks_card
+
+        pages, _interval = normalize_rotation_config(config)
+        validate_rotation_config(config)
+        candidate = select_next_page(load_display_state_v2(state_path), pages)
+        print(f"Rotation candidate page: {candidate}")
+
+        if args.output:
+            output = Path(args.output).expanduser()
+        elif args.dry_run:
+            output = Path(__file__).with_name(f"preview-{candidate}.png")
+        # 其余情形维持 test-card.png 默认
+
+        if candidate == "stocks":
+            fetched_at = datetime.now().astimezone()
+            try:
+                proxies_value = stocks_config.get("proxy")
+                quotes = await fetch_indices_async(
+                    stocks_config["indices"],
+                    proxy=proxies_value if isinstance(proxies_value, str) else None,
+                    timeout_seconds=float(stocks_config.get("timeout_seconds", 60)),
+                )
+            except StocksDataError as exc:
+                print(f"Stocks page skipped this round: {exc}")
+                raise SystemExit(1)
+            display_state = stocks_display_state(quotes, fetched_at=fetched_at)
+            if unchanged(candidate, display_state):
+                return
+            black_image, red_image, preview = build_stocks_card(
+                args.width, args.height, quotes, now=fetched_at)
+            preview.save(output)
+            await render_and_send(candidate, display_state, black_image, red_image, output, pages)
+        else:
+            # quota / calendar-agenda / calendar-sensor 三页：与本文件既有单模式
+            # 分支逻辑完全同构 —— 取数 → display_state → unchanged 判定 → build 卡片
+            # → preview.save(output) → render_and_send(candidate, ..., scope_pages=pages)。
+            # 执行者复制对应分支代码，仅把 unchanged/save 相关调用改成上述形状。
+            ...
+        return
+```
+
+注意：
+- `unchanged()` 已是 Task 4 的 (page_id, entry) 签名，rotation 下比较目标
+  是该页自己的条目；
+- dry-run 下 render_and_send 在 BLE 前早退，不会碰状态文件；
+- `normalize_rotation_config` 从 rotation_state 导入（Task 1 里已实现），
+  不要在本文件重复定义。
+
+- [ ] **Step 4: 更新 exports 检查（防循环导入）**
+
+`stocks_card.py` 从 `epd_status` 导入 helper（font/text_right），而
+`epd_status.main()` 才动态 import stocks_card —— 无模块级循环。
+验证：`.venv/bin/python -c "import epd_status, stocks_card, stocks_data, rotation_state; print('imports ok')"`
+Expected: `imports ok`
+
+- [ ] **Step 5: 全量回归 + 手动冒烟**
 
 ```bash
-git add epd_status.py tests/test_epd_status.py
-git commit -m "feat: migrate display state to v2 nested format across modes"
-```
-
----
-
-### Task 7: rotation 模式主流程
-
-**Files:**
-- Modify: `epd_status.py`（main() 增加 rotation 分支、CLI/配置接线）
-
-- [ ] **Step 1: 失败测试（调度集成层面，mock 数据源）**
-
-追加到 `tests/test_rotation_stocks.py`：
-
-```python
-class RotationFlowTests(unittest.TestCase):
-    """Integration-level checks around the rotation branch wiring helpers."""
-
-    def test_mode_accepts_rotation_choice(self):
-        # CLI choices 通过 parser 校验；此处验证常量表一致
-        from epd_status import VALID_PAGE_IDS
-        self.assertIn("rotation", ("quota", "calendar-agenda", "calendar-sensor", "rotation"))
-
-    def test_normalize_returns_interval_default_when_absent(self):
-        from epd_status import normalize_rotation_config
-        pages, interval = normalize_rotation_config({"rotation": {"pages": ["a-quota-placeholder"]}})
-        # normalize 只做默认回退；合法性由 validate 负责
-        self.assertEqual(interval, None)
-```
-
-（main() 本体不做重型集成测试 —— BLE 与网络边界均已拆为可 mock 边界，
-端到端留给手动验证步骤。）
-
-- [ ] **Step 2: main() 增加 rotation 分支**
-
-在 `parser.add_argument("--mode", choices=(...))` 中加入 `"rotation"`。
-`validate_rotation_config(config)` 在 mode == rotation 时调用。
-
-核心分支（插在 `elif mode == "calendar-sensor"` 之后）：
-
-```python
-else:  # mode == "rotation"
-    from stocks_data import fetch_indices, StocksDataError
-    from stocks_card import build_stocks_card
-
-    pages, _interval = normalize_rotation_config(config)
-    validate_rotation_config({**config, "display_mode": "rotation"})
-    stored = load_display_state_v2(state_path)
-    candidate = select_next_page(stored, pages)
-    print(f"Rotation candidate page: {candidate}")
-
-    if candidate == "stocks":
-        proxies = stocks_config.get("proxy")
-        timeout = float(stocks_config.get("timeout_seconds", 60))
-        quotes = fetch_indices(
-            stocks_config["indices"],
-            proxy=proxies if isinstance(proxies, str) else None,
-            timeout_seconds=timeout,
-        )
-        fetched_now = datetime.now().astimezone()
-        new_entry = stocks_display_state(quotes, fetched_at=fetched_now)
-        if unchanged(candidate, new_entry, None):
-            return
-        black_image, red_image, preview = build_stocks_card(
-            args.width, args.height, quotes, now=fetched_now)
-        preview.save(output)
-    elif candidate == "quota":
-        windows = fetch_codex_quota()
-        new_entry = quota_display_state(windows)
-        if unchanged(candidate, new_entry, None):
-            return
-        black_image, red_image, preview = build_quota_card(args.width, args.height, windows)
-        preview.save(output)
-    elif candidate == "calendar-agenda":
-        # …… 与现有单模式分支同构：取配额 + 日程 → calendar_agenda_display_state
-        # → unchanged 判断 → build_calendar_agenda_card（执行者照抄现有分支逻辑）
-        ...
-    else:  # calendar-sensor 同构照抄
-        ...
-
-    # 公共写屏尾段（复用主流程现有 pack/BLE 段——见 Step 3 说明）
-```
-
-- [ ] **Step 3: 公共写屏尾部改造**
-
-rotation 与单模式共存于同一 main() 的现实决定了两处选择其一：
-把"pack → dry-run 判断 → BLE → 保存状态"尾段抽成局部函数 `render_and_send(black_image, red_image, preview, candidate, new_entry)`
-供两个流径复用；内部完成 pack_monochrome、dry_run 早退、write_card_with_retry、
-以及：
-
-```python
-updated = merge_page_state(
-    load_display_state_v2(state_path) or empty_display_state(),
-    active_pages=candidate_pages_scope,   # rotation 模式 = 全部 pages；单模式 = [mode]
-    current_page=candidate,
-    new_entry=new_entry,
-)
-save_display_state_v2(state_path, updated)
-```
-
-预览输出名改为页面相关：`output = Path(f"preview-{candidate}.png") if rotation
-且未指定 --output`。
-
-- [ ] **Step 4: 手动冒烟（真实网络、dry-run）**
-
-```bash
+.venv/bin/python -m pytest tests/ -v      # 全部通过
+cp /tmp/epd-test-config.json . 2>/dev/null || true
 cat > /tmp/epd-test-config.json <<'EOF'
 {
   "display_mode": "rotation",
   "rotation": {"pages": ["calendar-agenda", "stocks"], "interval_seconds": 300},
   "stocks": {
     "proxy": "http://127.0.0.1:7890",
-    "indices": [
-      {"zone": "US", "symbol": "^DJI", "name": "道琼斯"},
-      {"zone": "US", "symbol": "^GSPC", "name": "标普500"},
-      {"zone": "US", "symbol": "^IXIC", "name": "纳斯达克"},
-      {"zone": "CN", "symbol": "000001.SS", "name": "上证指数"},
-      {"zone": "CN", "symbol": "399006.SZ", "name": "创业板指"},
-      {"zone": "ASIA", "symbol": "^N225", "name": "日经225"},
-      {"zone": "ASIA", "symbol": "^KS11", "name": "韩国KOSPI"}
-    ]
-  }
-}
-EOF
-.venv/bin/python epd_status.py --config /tmp/epd-test-config.json --mode rotation --dry-run
-```
-
-Expected: 打印 "Rotation candidate page: calendar-agenda"，生成
-`preview-calendar-agenda.png`；再跑一次应轮到 stocks 并打印候选，
-生成 `preview-stocks.png`。（dry-run 不写 state 文件。）
-
-注意执行者：dry-run 跑两轮时中间要人工挪走/重建 state 或依赖首轮没写 state
-这一事实 —— 若首轮曾以非 dry-run 方式写过 state，二次 dry-run 的候选页会推进。
-
-- [ ] **Step 5: config.example.json 更新**
-
-```json
-{
-  "display_mode": "rotation",
-  "rotation": {
-    "pages": ["calendar-agenda", "stocks"],
-    "interval_seconds": 300
-  },
-  "stocks": {
-    "proxy": null,
     "timeout_seconds": 60,
     "indices": [
       {"zone": "US", "symbol": "^DJI", "name": "道琼斯"},
@@ -1196,71 +1260,120 @@ Expected: 打印 "Rotation candidate page: calendar-agenda"，生成
       {"zone": "ASIA", "symbol": "^KS11", "name": "韩国KOSPI"}
     ]
   },
-  "calendar": {"names": [], "max_events": 4},
-  "sensor": {
-    "file": "sensor-reading.json",
-    "temperature_key": "temperature",
-    "humidity_key": "humidity",
-    "timestamp_key": "timestamp",
-    "location": "书房",
-    "max_age_minutes": 30
-  }
+  "calendar": {"names": [], "max_events": 4}
 }
+EOF
+rm -f .last-display-state.json
+.venv/bin/python epd_status.py --config /tmp/epd-test-config.json --mode rotation --dry-run
+ls preview-*.png
+.venv/bin/python epd_status.py --config /tmp/epd-test-config.json --mode rotation --dry-run
+ls preview-*.png
 ```
 
-- [ ] **Step 6: 全量测试回归**
-
-Run: `.venv/bin/python -m pytest tests/ -v`
-Expected: 全部通过
-
-- [ ] **Step 7: 提交**
+Expected 行为说明（正确预期，不是 bug）：
+dry-run 不写状态，因此两次连续 dry-run 的候选页相同（首轮均为
+"calendar-agenda"，生成 `preview-calendar-agenda.png`）。要观察到候选页推进，
+须以非 dry-run 方式真实写屏一次（或人工放置一个 v2 state 文件把 current_page
+置为 "calendar-agenda"，再用 --dry-run 试 stocks 页渲染）：
 
 ```bash
-git add epd_status.py config.example.json tests/test_rotation_stocks.py
-git commit -m "feat: wire rotation mode into main with per-page change-driven refresh"
+printf '{"version":2,"current_page":"calendar-agenda","pages":{"calendar-agenda":{"mode":"calendar-agenda"}}}' > .last-display-state.json
+.venv/bin/python epd_status.py --config /tmp/epd-test-config.json --mode rotation --dry-run
+ls preview-stocks.png && echo OK
+```
+
+Expected: 打印 "Rotation candidate page: stocks" 且生成 preview-stocks.png
+（真实行情数据，7 行齐全）。
+
+故障注入冒烟（验证 StocksDataError 路径）：
+
+```bash
+.venv/bin/python epd_status.py --config <(python3 - <<'PY'
+import json
+cfg = json.load(open('/tmp/epd-test-config.json'))
+cfg['stocks']['proxy'] = 'http://127.0.0.1:1'
+print(json.dumps(cfg))
+PY
+) --mode rotation --dry-run 2>&1 | tail -2
+```
+
+Expected: 打印 "Stocks page skipped this round: ..." 后退出码 1
+（配额/candidate 为其他页时不受影响）。
+
+- [ ] **Step 6: config.example.json 更新 + 提交**
+
+照 Task 6 Step 5 的结构更新 `config.example.json`
+（display_mode 改 "rotation"、加 rotation 与 stocks 段，保留 calendar/sensor）。
+
+```bash
+git add epd_status.py config.example.json
+git commit -m "feat: wire rotation mode into main with change-driven refresh"
 ```
 
 ---
 
-### Task 8: README 补充说明 + 最终收尾
+### Task 7: README 补充 + 收尾整理
 
 **Files:**
-- Modify: `README.md`（功能表 + 快速上手补充轮播用法）
+- Modify: `README.md`
+- Modify: `tests/test_rotation_stocks.py`（仅整理 import）
 
-- [ ] **Step 1: README 增补**
+- [ ] **Step 1: 整理测试文件 imports 到顶部**
 
-在功能表加入一行：
+把逐 Task 追加在中部/nearby 的 `import json/tempfile/os/...` 与模块级辅助
+（_fake_fast_info、STOCKS_NOW）上提到文件顶部 import 区下方，保持
+`if __name__ == "__main__"` 守卫只在文件尾出现一次；跑一遍全量测试确认无碍。
+
+- [ ] **Step 2: README 增补**
+
+功能表加入一行：
 
 ```markdown
-| **页面轮播** | config.json 的 rotation.pages 决定参与轮播的页面与顺序；每轮切换到下一页，但页面可见内容未变时跳过写屏，休市时段自然停住减少闪屏。 |
+| **页面轮播** | `config.json` 的 `rotation.pages` 决定参与轮播的页面与顺序；每轮切向下一页，但页面可见内容未变时跳过写屏 —— 休市时段自然停住，减少闪屏。股票页数据来自 Yahoo Finance。 |
 ```
 
-在第 5 步定时更新小节追加：
+在第 5 步定时更新小节末尾追加：
 
-```zsh
+```markdown
+启用轮播时建议把间隔调到与 `rotation.interval_seconds` 一致：
+
+\`\`\`zsh
 EPD_UPDATE_INTERVAL_SECONDS=300 ./scripts/install-launchagent.sh
+\`\`\`
+
+股票页走 Yahoo Finance 国际行情，机器需要能访问外网；launchd 任务不继承终端
+环境变量，若需要代理请在 `config.json` 的 `stocks.proxy` 中显式配置。
+美股夜盘刷新要求 Mac 不睡眠。
 ```
 
-配文：启用轮播时建议把间隔同步调到与 `rotation.interval_seconds` 一致；
-美股夜盘需要刷新的话，Mac 不能睡眠。
+- [ ] **Step 3: 最终全量回归 + spec 验收清单核对**
 
-安全检查表核对后提交。
+Run: `.venv/bin/python -m pytest tests/ -v`
+Expected: 全绿
 
-- [ ] **Step 2: 最后全量测试 + 提交**
+逐条核对 spec §验收 清单（plan 末尾附）：
+
+- [ ] `--mode rotation --dry-run` 出预览图，agenda 与 stocks 均可渲染
+- [ ] 真实网络拉取 7 个指数且 change% 与财经网站一致
+- [ ] 相同内容第二轮日志出现 skip（可用 v2 state 文件手工模拟）
+- [ ] 写屏中断/失败时 state 文件不变（BLE mock 测试覆盖该不变式）
+- [ ] 旧版 v1 state 文件被无害丢弃重建
+- [ ] 无 stocks 配置而 pages 含 stocks → 启动报错退出
+
+- [ ] **Step 4: 提交**
 
 ```bash
-.venv/bin/python -m pytest tests/ -v
-git add README.md
-git commit -m "docs: document rotation mode and stocks page"
+git add README.md tests/test_rotation_stocks.py
+git commit -m "docs: document rotation mode and tidy test imports"
 ```
 
 ---
 
 ## 验收清单（对齐 spec）
 
-- [ ] `--mode rotation --dry-run` 出预览图，含 stocks 页与 agenda 页交替
+- [ ] `--mode rotation --dry-run` 出预览图，agenda 与 stocks 均可交替渲染
 - [ ] 真实网络拉取 7 个指数且 change% 与财经网站一致
-- [ ] 休市时段连续两轮内容相同 → 第二轮日志出现 skip 且屏幕不刷
+- [ ] 休市时段内容相同的下一轮 → skip 日志且屏幕不刷
 - [ ] 写屏中断/失败时 `.last-display-state.json` 内容不变
 - [ ] 旧版 v1 state 文件被无害丢弃重建
 - [ ] 无 `stocks` 配置而 pages 含 stocks → 启动报错退出
