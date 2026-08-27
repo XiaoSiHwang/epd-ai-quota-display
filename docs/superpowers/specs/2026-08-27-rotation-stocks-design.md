@@ -25,7 +25,7 @@
 | 页面排版 | 三列全部水平居中（名称 / 当前价 / 涨跌幅）；分区标题两侧虚线夹持居中；右上角 UPD 最后刷新时间；不显示图例行 |
 | 数据源 | Yahoo Finance（yfinance 库）。数据源模块可替换，为将来接入其他付费 API 预留接口 |
 | 数据拉取失败 | 保留屏幕上一帧不动，日志记录错误（与项目"失败保留上一帧"哲学一致） |
-| 轮换策略 | B 变化才切换：轮到某页时先取数比对，内容与其上次写屏状态相同则跳过本轮，屏幕保持该页继续显示 |
+| 轮换策略 | B 变化才切换：轮到某页时先取数比对，内容与其上次写屏状态相同则跳过本轮，屏幕保持当前画面不变 |
 
 ### 用户环境注意事项
 
@@ -111,7 +111,8 @@ epd-ai-quota-display/
   {"version": 2, "current_page": "stocks",
    "pages": {"calendar-agenda": {...}, "stocks": {...}}}
   ```
-- 单模式分支读 `state["pages"].get(<mode>)`、写回时保留其他页的条目并更新
+- 单模式分支读 `state["pages"].get(<mode>)`、写回时保留仍处于本分支管辖的
+  其他页条目并更新
   `current_page = <mode>`；三种旧模式的"内容未变跳过"判定改为对该页条目的比对，
   行为语义与现在完全一致。
 - 兼容读取：加载时若发现顶层含 `mode` 而无 `pages`（v1 旧格式），整体视为未知
@@ -126,7 +127,7 @@ epd-ai-quota-display/
         # 首轮(current_page=None)或残留页已被移除 → pages[0]
         # 正常 → (last_page 下标 + 1) % len(pages)
 
-  data = 取 candidate 页数据               # 失败 → 见 3.4
+  data = 取 candidate 页数据               # 失败 → 见 3.5
   new_state = candidate 页的 display_state(data)
 
   if new_state == state.pages[candidate]:
@@ -172,8 +173,10 @@ epd-ai-quota-display/
 ### 3.6 代理与依赖
 
 - yfinance 无一等公民 proxy 参数；实现采用**预导入注入环境变量**方案：
-  在导入 yfinance 前设置 `HTTP_PROXY` / `HTTPS_PROXY`（取自 `stocks.proxy`，
-  未配置时不设）。此机制必须在 launchd 环境下实测（launchd 不继承终端环境变量）。
+  在 `stocks_data` 模块内于导入 yfinance 前设置 `HTTP_PROXY` / `HTTPS_PROXY`
+  （取自 `stocks.proxy`，未配置时不设）。注入是进程全局副作用，此处明确接受：
+  该机器所有外部流量本就经此代理路由，同进程的其他网络调用（配额/传感器）
+  不受实质影响。此机制必须在 launchd 环境下实测（launchd 不继承终端环境变量）。
 - `requirements.txt` 新增 `yfinance`；`config.example.json` 增加 `rotation`
   与 `stocks` 示例段（含注释性默认值）。
 
