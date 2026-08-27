@@ -1,5 +1,89 @@
 # tests/test_rotation_stocks.py
+import os
 import unittest
+from unittest.mock import MagicMock, patch
+
+from stocks_data import IndexQuote
+
+
+def _fake_fast_info(last, prev):
+    info = MagicMock()
+    info.last_price = last
+    info.previous_close = prev
+    info.currency = "USD"
+    return info
+
+
+class StocksDataTests(unittest.IsolatedAsyncioTestCase):
+    INDICES = [
+        {"zone": "US", "symbol": "^DJI", "name": "道琼斯"},
+        {"zone": "CN", "symbol": "000001.SS", "name": "上证指数"},
+    ]
+
+    async def _run_fetch(self, side_effect_fn, indices=None, proxy=None):
+        from stocks_data import fetch_indices_async
+        with patch("yfinance.Ticker", side_effect=side_effect_fn):
+            return await fetch_indices_async(indices or self.INDICES, proxy=proxy)
+
+    async def test_quotes_include_change_percent(self):
+        t = MagicMock()
+        t.fast_info = _fake_fast_info(53000.0, 52500.0)
+        quotes = await self._run_fetch(lambda symbol: t)
+        self.assertEqual(len(quotes), 2)
+        first = quotes[0]
+        self.assertEqual(first.name, "道琼斯")
+        self.assertAlmostEqual(first.price, 53000.0)
+        self.assertAlmostEqual(first.change_pct, (53000.0 / 52500.0 - 1) * 100, places=6)
+        self.assertFalse(first.unavailable)
+
+    async def test_partial_failure_marks_unavailable(self):
+        def broken_for_ss(symbol):
+            t = MagicMock()
+            if symbol == "000001.SS":
+                raise RuntimeError("boom")
+            t.fast_info = _fake_fast_info(100.0, 99.0)
+            return t
+        quotes = await self._run_fetch(broken_for_ss)
+        self.assertTrue(quotes[1].unavailable)
+        self.assertFalse(quotes[0].unavailable)
+
+    async def test_all_failures_raise_with_reasons(self):
+        def always_broken(symbol):
+            raise RuntimeError("network down")
+        with self.assertRaisesRegex(RuntimeError, "network down"):
+            await self._run_fetch(always_broken)
+
+    async def test_none_price_row_is_unavailable_while_others_survive(self):
+        def none_for_dji(symbol):
+            t = MagicMock()
+            if symbol == "^DJI":
+                t.fast_info = _fake_fast_info(None, None)
+            else:
+                t.fast_info = _fake_fast_info(100.0, 99.0)
+            return t
+        quotes = await self._run_fetch(none_for_dji)
+        self.assertTrue(quotes[0].unavailable)
+        self.assertFalse(quotes[1].unavailable)
+
+    async def test_proxy_env_injected(self):
+        from stocks_data import fetch_indices_async
+        env_seen = {}
+
+        def capture_env(symbol):
+            env_seen["HTTP_PROXY"] = os.environ.get("HTTP_PROXY")
+            t = MagicMock()
+            t.fast_info = _fake_fast_info(1.0, 1.0)
+            return t
+
+        with patch.dict(os.environ, {}, clear=False):
+            saved = {k: os.environ.pop(k) for k in list(os.environ) if k.upper().endswith("_PROXY")}
+            try:
+                with patch("yfinance.Ticker", side_effect=capture_env):
+                    await fetch_indices_async([{"zone": "US", "symbol": "^DJI", "name": "D"}],
+                                              proxy="http://127.0.0.1:7890")
+            finally:
+                os.environ.update(saved)
+        self.assertEqual(env_seen["HTTP_PROXY"], "http://127.0.0.1:7890")
 
 
 class RotationConfigValidationTests(unittest.TestCase):
