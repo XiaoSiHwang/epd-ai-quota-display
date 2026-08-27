@@ -65,11 +65,21 @@
 规则：
 
 - `display_mode: "rotation"` 为新模式；现有三种模式原样保留、行为不变（向后兼容）。
-- `rotation.pages` 缺省时等价于 `["quota"]`（即旧行为）。
+- **缺省键回退**：`rotation.pages` 缺省时等价于 `["quota"]`（即旧行为）；
+  第 2 节所称"默认 `["calendar-agenda", "stocks"]`"仅指新装用户的
+  `config.example.json` 示例写法，不是缺省回退值。
 - 分区顺序由索引条目的 `zone` 出现顺序自然形成，不做硬编码分区；默认配置即为
   美 → 中 → 日韩。同 zone 连续条目归入同一分区，分区标题渲染为 "US · 美股"
-  这样的双语标签（内建映射表，可在条目级覆盖）。
+  这样的双语标签（内建映射表；条目可加可选字段 `"zone_label": "自定义标题"`
+  覆盖所在分区的显示标题）。
 - 所有 CLI 参数仍优先于配置文件（沿用现有 `configured()` 链）。
+
+**配置校验（启动时 fail fast）**：
+
+- 合法页面 ID 仅限：`quota` / `calendar-agenda` / `calendar-sensor` / `stocks`；
+- `pages` 为空数组、含未知 ID 或含重复 ID → 报错退出；
+- `rotation.pages` 含 `stocks` 而 `stocks.indices` 缺失/为空 → 报错退出；
+- `rotation.interval_seconds` 存在且 < 60 → 报错退出（与安装脚本下限一致）。
 
 ### 3.2 模块划分
 
@@ -77,42 +87,51 @@
 
 ```
 epd-ai-quota-display/
-├── epd_status.py            # 入口：新增 rotation 模式分发；state 文件改为按页分存
+├── epd_status.py            # 入口：新增 rotation 模式分发
 ├── stocks_data.py           # 新增：行情获取层（可替换数据源）
 │                            #   fetch_indices(config) -> list[IndexQuote]
 │                            #   IndexQuote(name, price, change_pct, zone)
 │                            #   yfinance 实现 + 统一错误类型 StocksDataError
-│                            #   proxy 传递；超时保护；部分失败降级（见 3.4）
+│                            #   优先一次批量 download() 取全部符号；
+│                            #   总超时预算默认 60s（可配 stocks.timeout_seconds）。
 ├── stocks_card.py           # 新增：股票页渲染（纯函数 build_stocks_card）
 │                            #   黑/红双图层 + 合成预览图，与现有 card 函数签名一致
-└── rotation_state.py        # 新增：轮播状态管理
-                             #   单一 state 文件内部结构升级：
-                             #   {"version":..., "current_page": "stocks",
-                             #    "pages": {"calendar-agenda": {...每页可见状态...},
-                             #              "stocks": {...}}}
+└── rotation_state.py        # 新增：轮播状态管理（按页分存的 state 文件读写）
+                             #   select_next_page(state, pages) -> str：纯函数调度器
+                             #     - current_page 为 None 或不在 pages 中 → pages[0]
+                             #     - 正常情况 → (当前下标 + 1) % len(pages)
+                             #     - pages 为空已由配置校验拦截，此处不再防
 ```
 
-`epd_status.py` 中新增：
+**状态文件统一升级**（评审意见采纳）：
 
-- `rotating_display_state()`：计算本轮应显示哪一页的调度逻辑（3.3）。
-- rotation 分支：取下一页 ID → 取该页数据 → 与该页上次状态比对 → 未变化则整体跳过；
-  变化则渲染并写屏后更新当前页指针与该页状态。
+- 四种模式全部迁移到嵌套结构；旧的 `quota_display_state()` 等返回值成为
+  `pages[<mode>]` 的载荷，键名保持原样以便比对面逻辑不变：
+  ```json
+  {"version": 2, "current_page": "stocks",
+   "pages": {"calendar-agenda": {...}, "stocks": {...}}}
+  ```
+- 单模式分支读 `state["pages"].get(<mode>)`、写回时保留其他页的条目并更新
+  `current_page = <mode>`；三种旧模式的"内容未变跳过"判定改为对该页条目的比对，
+  行为语义与现在完全一致。
+- 兼容读取：加载时若发现顶层含 `mode` 而无 `pages`（v1 旧格式），整体视为未知
+  状态丢弃重建——单模式下至多多刷一次屏，代价可接受。
 
 ### 3.3 轮换调度算法（策略 B）
 
 ```
 本轮运行:
-  pages = config.rotation.pages          # 如 [A, B]
-  last_page = state.current_page         # 上次实际写在屏上的页
-  next_index = (last_page 在 pages 中的下标 + 1) % len(pages)
-  candidate = pages[next_index]
+  pages = config.rotation.pages          # 如 [A, B]，已过配置校验
+  candidate = select_next_page(state, pages)
+        # 首轮(current_page=None)或残留页已被移除 → pages[0]
+        # 正常 → (last_page 下标 + 1) % len(pages)
 
   data = 取 candidate 页数据               # 失败 → 见 3.4
   new_state = candidate 页的 display_state(data)
 
   if new_state == state.pages[candidate]:
       log("no change; keep showing previous page")
-      return                              # 不写屏、不改 current_page
+      return                              # 不写屏、不改 current_page、不动 state 文件
   else:
       渲染 → BLE 写屏 → 成功后:
         state.current_page = candidate
@@ -122,21 +141,43 @@ epd-ai-quota-display/
 要点：
 
 - 屏幕上永远只有一页；`current_page` 只在 BLE 写屏成功后推进（复用现有
-  "成功才保存状态"语义）。
+  "成功才保存状态"语义）——写屏失败时状态文件必须保持原样。
 - 若连续多轮同一页无变化，它一直是屏幕上的画面，后续轮次会不断重取数据比对 ——
   一旦行情变化立即切过去。行为符合"交易时段正常轮播、休市时段停住"的目标。
+- `--dry-run` 只渲染不涉及 state：current_page 与各页条目均不读写，预览输出
+  到 `--output`（缺省文件名含页面名，如 `preview-stocks.png`，避免覆盖固定
+  test-card.png）。
 - 页面从 `pages` 清单中被移除时，其残留状态在下次保存时清理。
 
-### 3.4 错误处理
+### 3.4 股票页可比状态定义
+
+跳过逻辑依赖精确的可比载荷；以下字段进入 `stocks_display_state()`：
+**每个指数条目的 (name, zone 分区标题, 格式化价格字符串, 四舍五入到两位的
+涨跌幅字符串, 数据可用标志)**。缺失符号以 `"unavailable": true` 参与
+比对 —— 可用性翻转本身算作可见变化。
+
+明确排除项：数据获取时间戳不参与比对（否则每轮必判变化，跳过机制失效），
+但渲染时写入 UPD 区域；跳过轮次屏幕保留上一帧的旧 UPD 时间是预期行为
+（UPD 实际含义 = 最后写屏时刻的数据取得时间）。
+
+### 3.5 错误处理
 
 | 故障 | 行为 |
 | --- | --- |
 | yfinance 请求失败/超时/被限流 | 记录日志，进程以非零码退出，屏幕保持上一帧（launchd 下轮自动再试） |
-| 7 个指数中部分符号无数据 | 缺失的行渲染为"—"+虚线进度样式的占位（沿用配额页 unavailable 视觉语言）；全失败则视为整页失败走上一行策略 |
+| 7 个指数中部分符号无数据 | 缺失的行渲染为"—"占位（沿用配额页 unavailable 视觉语言），可用标志参与状态比对；全失败则视为整页失败走上一行策略 |
 | config.json 无 stocks 配置而 rotation.pages 含 stocks | 启动即报错退出（fail fast，宁可不用默认行情源也不能用错配置） |
-| BLE 写屏失败 | 沿用现有 write_card_with_retry 重试一次；仍失败则 state 不更新 |
+| BLE 写屏失败 | 沿用现有 write_card_with_retry 重试一次；仍失败则 state 文件完全不更新 |
 
-### 3.5 股票页渲染规格
+### 3.6 代理与依赖
+
+- yfinance 无一等公民 proxy 参数；实现采用**预导入注入环境变量**方案：
+  在导入 yfinance 前设置 `HTTP_PROXY` / `HTTPS_PROXY`（取自 `stocks.proxy`，
+  未配置时不设）。此机制必须在 launchd 环境下实测（launchd 不继承终端环境变量）。
+- `requirements.txt` 新增 `yfinance`；`config.example.json` 增加 `rotation`
+  与 `stocks` 示例段（含注释性默认值）。
+
+### 3.7 股票页渲染规格
 
 画布 400×300，黑白红三色双图层（红色层承载上涨元素）：
 
@@ -161,31 +202,34 @@ GLOBAL INDICES                                              UPD 21:05
   Y 偏移问题沿用项目已知处理方式。
 - UPD 时间为数据成功取得的时刻。
 
-### 3.6 launchd / 自动更新适配
+### 3.8 launchd / 自动更新适配
 
 - 安装脚本无需改动；用户执行
   `EPD_UPDATE_INTERVAL_SECONDS=300 ./scripts/install-launchagent.sh`
   即可切到 5 分钟节奏（README 补充说明）。
-- `.last-display-state.json` 结构升级为按页分存；首次运行旧格式文件时
-  （含顶层 `mode` 字段而无 `pages` 字典）视为未知状态，直接忽略并重建
-  —— 单页模式下至多多刷一次屏，代价可接受。
+- 状态文件格式升级与兼容读取见 3.2。
 
 ## 4. 测试方案
 
-单元测试（pytest，遵循项目现有 tests/test_epd_status.py 风格）：
+单元测试（pytest，遵循项目现有 tests/test_epd_status.py 风格，目标覆盖率 ≥80%）：
 
-- rotation 调度：首轮从 current_page=None 起、循环推进、跳过无变化页、
-  移除页残留状态清理。
-- 状态兼容：旧单页 state 文件能被识别并重置。
-- stocks_data：解析 yfinance 返回结构（mock 网络）、缺符号降级、代理参数传递、
-  全失败抛 StocksDataError。
-- stocks_card：给定固定输入的图层快照测试（尺寸断言 + 关键文本存在性 +
-  涨跌颜色归属正确：上涨画在红层、下跌画在黑层）。
-- 配置加载：rotation 缺省回退、stocks 配置缺失报错。
+- **调度器 select_next_page（纯函数）**：首轮 current_page=None → pages[0]；
+  正常循环推进；current_page 指向已移除页 → pages[0]。
+- **状态兼容**：v1 旧单页 state 文件被识别并整体重置；嵌套 v2 结构读写往返一致。
+- **未变跳过**：display_state 相同 → 不写屏、state 文件字节不变；
+  不同 → 写屏成功才更新 current_page 与该页条目。
+- **写屏失败不变式**：模拟 BLE 抛错 → state 文件保持调用前原样。
+- **stocks_data**：解析 yfinance 返回结构（mock 网络）、缺符号降级为
+  unavailable、代理环境变量注入、超时预算生效、全失败抛 StocksDataError。
+- **stocks_card**：固定输入的图层断言（尺寸、关键文本存在性、涨跌颜色归属：
+  上涨画在红层、下跌画在黑层）；UPD 时间戳不进入可比状态载荷。
+- **配置校验**：缺省回退 ["quota"]；未知页 ID / 重复 ID / 空数组 /
+  stocks 缺 indices / interval_seconds < 60 各自报错。
 
 手动验证路径：
 
-1. `.venv/bin/python epd_status.py --mode rotation --dry-run` → 生成预览 PNG。
+1. `.venv/bin/python epd_status.py --mode rotation --dry-run` → 生成预览 PNG
+   （state 文件不被动）。
 2. `--force` 强制写屏一轮验证硬件链路。
 3. 观察 2 轮周期内"休市时段不再重复刷屏"的表现。
 
