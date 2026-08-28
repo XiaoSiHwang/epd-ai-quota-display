@@ -142,7 +142,7 @@ class SummarizeMonthTests(unittest.TestCase):
 class CacheTests(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.TemporaryDirectory()
-        self.cache_path = Path(self.tmpdir.name) / ".workout-cache.json"
+        self.cache_path = Path(self.tmpdir.name) / ".workout-cache.db"
 
     def tearDown(self):
         self.tmpdir.cleanup()
@@ -150,12 +150,18 @@ class CacheTests(unittest.TestCase):
     def test_missing_cache_returns_empty(self):
         self.assertEqual(load_month_cache(self.cache_path, 2026, 8), [])
 
-    def test_corrupt_cache_returns_empty(self):
-        self.cache_path.write_text("not json at all")
-        self.assertEqual(load_month_cache(self.cache_path, 2026, 8), [])
+    def test_cache_file_created_with_schema(self):
+        load_month_cache(self.cache_path, 2026, 8)
+        self.assertTrue(self.cache_path.exists())
+        import sqlite3
+        with sqlite3.connect(self.cache_path) as conn:
+            tables = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='activities'"
+            ).fetchall()
+        self.assertEqual(len(tables), 1)
 
-    def test_wrong_version_cache_returns_empty(self):
-        self.cache_path.write_text(json.dumps({"version": 999, "months": {}}))
+    def test_corrupt_cache_returns_empty(self):
+        self.cache_path.write_text("not a database at all")
         self.assertEqual(load_month_cache(self.cache_path, 2026, 8), [])
 
     def test_round_trip(self):
@@ -167,21 +173,25 @@ class CacheTests(unittest.TestCase):
         self.assertEqual(loaded[0].type, "Run")
 
     def test_save_preserves_other_months(self):
-        save_month_cache(self.cache_path, 2026, 7, parse_activities([_activity(1)]))
+        # SQLite stores by real date, so the July activity must carry a July date.
+        july_act = parse_activities([
+            {"id": "july1", "start_date_local": "2026-07-05T08:00:00", "type": "Run"},
+        ])
+        save_month_cache(self.cache_path, 2026, 7, july_act)
         save_month_cache(self.cache_path, 2026, 8, parse_activities([_activity(2)]))
         self.assertEqual(len(load_month_cache(self.cache_path, 2026, 7)), 1)
         self.assertEqual(len(load_month_cache(self.cache_path, 2026, 8)), 1)
 
-    def test_atomic_write(self):
+    def test_save_on_corrupt_db_degrades_without_raising(self):
+        self.cache_path.write_text("garbage that is not sqlite")
         save_month_cache(self.cache_path, 2026, 8, parse_activities([_activity(1)]))
-        self.assertFalse(self.cache_path.with_suffix(".json.tmp").exists())
-        self.assertTrue(self.cache_path.exists())
+        # Corrupt file stays as-is (not overwritten mid-error); no exception escaped.
 
 
 class MergeCacheTests(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.TemporaryDirectory()
-        self.cache_path = Path(self.tmpdir.name) / ".workout-cache.json"
+        self.cache_path = Path(self.tmpdir.name) / ".workout-cache.db"
 
     def tearDown(self):
         self.tmpdir.cleanup()
@@ -201,6 +211,39 @@ class MergeCacheTests(unittest.TestCase):
         merged = merge_activities_into_cache(
             self.cache_path, 2026, 8, existing, fresh)
         self.assertEqual(merged[0].name, "New Name")
+
+
+class CacheMigrationTests(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.tmpdir.name) / ".workout-cache.db"
+        self.legacy_path = self.db_path.with_suffix(".json")  # .workout-cache.json
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    def test_legacy_json_is_imported_on_first_open(self):
+        self.legacy_path.write_text(json.dumps({
+            "version": 1,
+            "months": {"2026-08": [
+                {"id": "a1", "day": "2026-08-03", "type": "Run",
+                 "name": "Morning", "moving_time": 1800, "distance": 5000.0},
+            ]},
+        }))
+        acts = load_month_cache(self.db_path, 2026, 8)
+        self.assertEqual(len(acts), 1)
+        self.assertEqual(acts[0].id, "a1")
+        # 迁移后 JSON 被重命名留档,不会二次导入
+        self.assertTrue(self.legacy_path.with_suffix(".json.migrated").exists())
+
+    def test_corrupt_legacy_json_is_renamed_not_fatal(self):
+        self.legacy_path.write_text("not json")
+        self.assertEqual(load_month_cache(self.db_path, 2026, 8), [])
+        self.assertTrue(self.legacy_path.with_suffix(".json.migrated").exists())
+
+    def test_no_legacy_json_means_empty_fresh_db(self):
+        self.assertEqual(load_month_cache(self.db_path, 2026, 8), [])
+        self.assertFalse(self.legacy_path.with_suffix(".json.migrated").exists())
 
 
 class FetchTests(unittest.IsolatedAsyncioTestCase):
