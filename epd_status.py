@@ -1111,7 +1111,7 @@ async def read_device_info(device):
 async def main():
     parser = argparse.ArgumentParser(description="Render quota, calendar/agenda, or calendar/sensor cards for an EPD-nRF5 display.")
     parser.add_argument("--config", default="config.json", help="optional JSON configuration file")
-    parser.add_argument("--mode", choices=("quota", "calendar-agenda", "calendar-sensor", "rotation"), help="display layout")
+    parser.add_argument("--mode", choices=("quota", "calendar-agenda", "calendar-sensor", "rotation", "workout"), help="display layout")
     parser.add_argument("--name-prefix", default="NRF_EPD", help="advertised BLE name prefix")
     parser.add_argument("--width", type=int, default=400)
     parser.add_argument("--height", type=int, default=300)
@@ -1165,6 +1165,9 @@ async def main():
     stocks_config = config.get("stocks") or {}
     if not isinstance(stocks_config, dict):
         raise RuntimeError("The stocks configuration must be a JSON object.")
+    workout_config = config.get("workout") or {}
+    if not isinstance(workout_config, dict):
+        raise RuntimeError("The workout configuration must be a JSON object.")
 
     def configured(cli_value, env_name: str, config_value, default=None):
         if cli_value is not None:
@@ -1176,7 +1179,7 @@ async def main():
         return default
 
     mode = configured(args.mode, "EPD_DISPLAY_MODE", config.get("display_mode"), "quota")
-    if mode not in ("quota", "calendar-agenda", "calendar-sensor", "rotation"):
+    if mode not in ("quota", "calendar-agenda", "calendar-sensor", "rotation", "workout"):
         raise RuntimeError(f"Unsupported display mode: {mode}")
 
     output = Path(args.output).expanduser() if args.output else Path(__file__).with_name("test-card.png")
@@ -1245,6 +1248,84 @@ async def main():
         preview.save(output)
         await render_and_send(mode, display_state, black_image, red_image, output, [mode])
         return
+    elif mode == "workout":
+        from workout_card import build_workout_card, workout_display_state
+        from workout_data import (
+            WorkoutDataError,
+            fetch_activities_async,
+            fetch_athlete_id_async,
+            load_month_cache,
+            merge_activities_into_cache,
+            summarize_month,
+        )
+
+        def resolve_workout_settings() -> dict:
+            api_key = configured(None, "EPD_WORKOUT_API_KEY", workout_config.get("api_key"))
+            if not api_key:
+                raise RuntimeError("workout.api_key is required for the workout page.")
+            athlete_id = workout_config.get("athlete_id")
+            return {
+                "api_key": str(api_key),
+                "athlete_id": str(athlete_id) if athlete_id else None,
+                "goal": int(workout_config.get("monthly_goal", 20)),
+                "proxy": workout_config.get("proxy"),
+                "activity_types": (
+                    tuple(workout_config["activity_types"])
+                    if workout_config.get("activity_types") else None
+                ),
+            }
+
+        async def load_workout_summary():
+            """Fetch this month's activities, cache them, degrade to cache on failure."""
+            settings = resolve_workout_settings()
+            cache_path = Path(__file__).with_name(".workout-cache.json")
+            today = datetime.now().astimezone().date()
+            first_of_month = today.replace(day=1)
+            existing = load_month_cache(cache_path, today.year, today.month)
+
+            athlete_id = settings["athlete_id"]
+            if not athlete_id:
+                athlete_id = await fetch_athlete_id_async(
+                    api_key=settings["api_key"], proxy=settings["proxy"])
+            try:
+                fresh = await fetch_activities_async(
+                    athlete_id=athlete_id,
+                    api_key=settings["api_key"],
+                    oldest=first_of_month,
+                    newest=today,
+                    proxy=settings["proxy"],
+                )
+                activities = merge_activities_into_cache(
+                    cache_path, today.year, today.month, existing, fresh)
+                cache_hit = False
+            except WorkoutDataError as exc:
+                print(f"Workout fetch failed; falling back to local cache: {exc}")
+                activities = existing
+                cache_hit = True
+            summary = summarize_month(
+                activities, year=today.year, month=today.month, today=today,
+                allowed_types=settings["activity_types"],
+            )
+            summary["cache_hit"] = cache_hit
+            print(f"Workout summary: {summary['workout_count']} workouts, "
+                  f"{summary['streak']}-day streak, cache={'HIT' if cache_hit else 'MISS'}")
+            return summary, settings["goal"]
+
+        summary, goal = await load_workout_summary()
+        fetched_at = datetime.now().astimezone()
+        display_state = workout_display_state(
+            year=summary["year"], month=summary["month"],
+            workout_count=summary["workout_count"], streak=summary["streak"],
+            trained_days=summary["trained_days"], days=summary["days"],
+            goal=goal, fetched_at=fetched_at,
+        )
+        if unchanged(mode, display_state):
+            return
+        black_image, red_image, preview = build_workout_card(
+            args.width, args.height, summary, goal=goal, now=fetched_at)
+        preview.save(output)
+        await render_and_send(mode, display_state, black_image, red_image, output, [mode])
+        return
     elif mode == "rotation":
         from rotation_state import (
             normalize_rotation_config,
@@ -1285,6 +1366,70 @@ async def main():
                 return
             black_image, red_image, preview = build_stocks_card(
                 args.width, args.height, quotes, now=fetched_at)
+            preview.save(output)
+            await render_and_send(candidate, display_state, black_image, red_image, output, pages)
+            return
+
+        if candidate == "workout":
+            from workout_card import build_workout_card, workout_display_state
+            from workout_data import (
+                WorkoutDataError,
+                fetch_activities_async,
+                fetch_athlete_id_async,
+                load_month_cache,
+                merge_activities_into_cache,
+                summarize_month,
+            )
+
+            fetched_at = datetime.now().astimezone()
+            workout_api_key = configured(None, "EPD_WORKOUT_API_KEY", workout_config.get("api_key"))
+            if not workout_api_key:
+                print("Workout page skipped this round: workout.api_key is missing.")
+                raise SystemExit(1)
+            workout_goal = int(workout_config.get("monthly_goal", 20))
+            workout_proxy = workout_config.get("proxy")
+            workout_proxy = workout_proxy if isinstance(workout_proxy, str) else None
+            activity_types = (
+                tuple(workout_config["activity_types"])
+                if workout_config.get("activity_types") else None
+            )
+            workout_cache = Path(__file__).with_name(".workout-cache.json")
+            today = datetime.now().astimezone().date()
+            existing_activities = load_month_cache(workout_cache, today.year, today.month)
+            try:
+                athlete_id = workout_config.get("athlete_id")
+                if not athlete_id:
+                    athlete_id = await fetch_athlete_id_async(
+                        api_key=str(workout_api_key), proxy=workout_proxy)
+                fresh_activities = await fetch_activities_async(
+                    athlete_id=str(athlete_id),
+                    api_key=str(workout_api_key),
+                    oldest=today.replace(day=1),
+                    newest=today,
+                    proxy=workout_proxy,
+                )
+                activities = merge_activities_into_cache(
+                    workout_cache, today.year, today.month,
+                    existing_activities, fresh_activities)
+            except WorkoutDataError as exc:
+                print(f"Workout fetch failed; falling back to local cache: {exc}")
+                activities = existing_activities
+            summary = summarize_month(
+                activities, year=today.year, month=today.month, today=today,
+                allowed_types=activity_types,
+            )
+            print(f"Workout summary: {summary['workout_count']} workouts, "
+                  f"{summary['streak']}-day streak")
+            display_state = workout_display_state(
+                year=summary["year"], month=summary["month"],
+                workout_count=summary["workout_count"], streak=summary["streak"],
+                trained_days=summary["trained_days"], days=summary["days"],
+                goal=workout_goal, fetched_at=fetched_at,
+            )
+            if unchanged(candidate, display_state):
+                return
+            black_image, red_image, preview = build_workout_card(
+                args.width, args.height, summary, goal=workout_goal, now=fetched_at)
             preview.save(output)
             await render_and_send(candidate, display_state, black_image, red_image, output, pages)
             return

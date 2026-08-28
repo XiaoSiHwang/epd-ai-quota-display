@@ -10,3 +10,5 @@ sensor-reading.json
 .last-display-state.json
 .last-display-state.json.tmp
 .superpowers/
+.workout-cache.json
+.workout-cache.json.tmp

@@ -160,6 +160,45 @@ class RotationConfigValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "interval_seconds"):
             validate_rotation_config(config)
 
+    def test_workout_page_without_api_key_rejected(self):
+        from rotation_state import validate_rotation_config
+        config = {"display_mode": "rotation", "rotation": {"pages": ["workout"]}}
+        with self.assertRaisesRegex(RuntimeError, "workout.api_key"):
+            validate_rotation_config(config)
+
+    def test_workout_page_with_api_key_passes(self):
+        from rotation_state import validate_rotation_config
+        config = {
+            "display_mode": "rotation",
+            "rotation": {"pages": ["workout"]},
+            "workout": {"api_key": "secret"},
+        }
+        validate_rotation_config(config)  # should not raise
+
+    def test_workout_non_positive_goal_rejected(self):
+        from rotation_state import validate_rotation_config
+        config = {
+            "display_mode": "rotation",
+            "rotation": {"pages": ["workout"]},
+            "workout": {"api_key": "secret", "monthly_goal": 0},
+        }
+        with self.assertRaisesRegex(RuntimeError, "monthly_goal"):
+            validate_rotation_config(config)
+
+    def test_workout_non_numeric_goal_rejected(self):
+        from rotation_state import validate_rotation_config
+        config = {
+            "display_mode": "rotation",
+            "rotation": {"pages": ["workout"]},
+            "workout": {"api_key": "secret", "monthly_goal": "many"},
+        }
+        with self.assertRaisesRegex(RuntimeError, "monthly_goal"):
+            validate_rotation_config(config)
+
+    def test_workout_page_id_accepted(self):
+        from rotation_state import VALID_PAGE_IDS
+        self.assertIn("workout", VALID_PAGE_IDS)
+
 
 class NormalizeRotationConfigTests(unittest.TestCase):
     def test_missing_section_defaults_to_quota(self):

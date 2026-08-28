@@ -1,8 +1,16 @@
 {
   "display_mode": "rotation",
   "rotation": {
-    "pages": ["calendar-agenda", "stocks"],
+    "pages": ["calendar-agenda", "stocks", "workout"],
     "interval_seconds": 300
+  },
+  "workout": {
+    "datasource": "intervals.icu",
+    "api_key": "YOUR_INTERVALS_ICU_API_KEY",
+    "athlete_id": null,
+    "monthly_goal": 20,
+    "activity_types": null,
+    "proxy": "http://127.0.0.1:7890"
   },
   "stocks": {
     "datasource": "yfinance",

@@ -6,7 +6,7 @@ Constants live here so every consumer imports one source of truth.
 import json
 from pathlib import Path
 
-VALID_PAGE_IDS = ("quota", "calendar-agenda", "calendar-sensor", "stocks")
+VALID_PAGE_IDS = ("quota", "calendar-agenda", "calendar-sensor", "stocks", "workout")
 DISPLAY_STATE_VERSION = 2
 
 
@@ -43,6 +43,23 @@ def validate_rotation_config(config: dict):
                 raise RuntimeError(
                     "Each stocks.indices entry requires zone, symbol and name fields."
                 )
+
+    if "workout" in pages:
+        workout = config.get("workout") or {}
+        if not isinstance(workout, dict):
+            raise RuntimeError("The workout configuration must be a JSON object.")
+        if not workout.get("api_key"):
+            raise RuntimeError(
+                "rotation.pages includes 'workout' but workout.api_key is missing."
+            )
+        try:
+            goal = workout.get("monthly_goal")
+            if goal is not None:
+                int(goal)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("workout.monthly_goal must be an integer.") from exc
+        if goal is not None and int(goal) <= 0:
+            raise RuntimeError("workout.monthly_goal must be a positive integer.")
 
     try:
         interval = rotation.get("interval_seconds")
