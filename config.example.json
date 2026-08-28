@@ -9,7 +9,6 @@
     "proxy": null,
     "timeout_seconds": 60,
     "indices": [
-      {"zone": "US", "symbol": "^DJI", "name": "道琼斯"},
       {"zone": "US", "symbol": "^GSPC", "name": "标普500"},
       {"zone": "US", "symbol": "^IXIC", "name": "纳斯达克"},
       {"zone": "CN", "symbol": "000001.SS", "name": "上证指数"},
