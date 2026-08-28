@@ -7,7 +7,7 @@
   "workout": {
     "datasource": "intervals.icu",
     "api_key": "YOUR_INTERVALS_ICU_API_KEY",
-    "athlete_id": "i113469",
+    "athlete_id": "i80130",
     "monthly_goal": 20,
     "activity_types": null,
     "proxy": "http://127.0.0.1:7890"

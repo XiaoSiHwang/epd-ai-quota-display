@@ -14,6 +14,8 @@ sensor-reading.json
 .workout-cache.json.tmp
 .workout-cache.db
 .workout-cache.db-journal
+workout-cache.db
+workout-cache.db-journal
 workout-cache.db*
 zzworkout-cache.db*
 .workout-cache.json.migrated
