@@ -47,6 +47,7 @@ nRF52811 电子价签。设备独立日历温度模式需要刷入本项目配�
 | **失败时保留上一帧** | 自动更新默认不预先清屏；蓝牙中途断开时保留旧画面，并自动重试一次完整图层。 |
 | **无变化不刷新** | 日期、周配额和今日日程均未变化时跳过 BLE 写入，减少闪屏和全刷次数。 |
 | **页面轮播** | `config.json` 的 `rotation.pages` 决定参与轮播的页面与顺序；每轮切向下一页，但页面可见内容未变时跳过写屏 —— 休市时段自然停住，减少闪屏。股票页数据来自 Yahoo Finance。 |
+| **运动日历** | 从 [intervals.icu](https://intervals.icu/api-docs.html) 拉取当月运动记录，渲染 Keep 风格月度训练日历：完成度圆环（本月次数 / 月度目标）、连续训练天数、总次数，训练日以红点标记。数据缓存在本地 SQLite（`.workout-cache.db`），接口失败时自动降级读缓存。 |
 | **完整中文教程** | 包含安装、BLE 协议、空白屏排查、实际验证记录和最终 HTML 设计稿。 |
 
 ## 显示内容
@@ -454,6 +455,30 @@ EPD_UPDATE_INTERVAL_SECONDS=300 ./scripts/install-launchagent.sh
 股票指数页走 Yahoo Finance 国际行情，机器需要能访问外网；launchd 任务不继承
 终端环境变量，若需要代理请在 `config.json` 的 `stocks.proxy` 中显式配置。
 美股夜盘也要刷新的话，Mac 不能睡眠。
+
+### 运动日历页
+
+`rotation.pages` 中加入 `"workout"`（或单独 `--mode workout`）即可显示
+Keep 风格的月度训练日历：
+
+- 左侧为月份标题、完成度圆环（本月训练次数 / `workout.monthly_goal` 目标，
+  默认 20）以及"连续训练"与"训练次数"两个统计；
+- 右侧为周日～周六 7 列点阵：训练过的日期画红点，今天有外圈标记；
+- 数据来自 [intervals.icu](https://intervals.icu/api-docs.html)，在
+  `config.json` 中配置 `workout.api_key`（intervals.icu 的 Settings →
+  API Keys 生成）；`athlete_id` 可省略，首次运行自动发现；
+- 默认所有活动类型都算训练，`workout.activity_types` 可配置白名单过滤；
+- 该接口同样需要外网，代理写入 `workout.proxy`（launchd 不继承终端环境变量）。
+
+本地缓存为项目目录下的 `.workout-cache.db`（SQLite，标准库实现，无额外
+依赖）：活动按 ID 去重、按月查询；每次成功拉取后合并写库，接口失败时
+自动降级读取缓存渲染，不会白屏。更早版本的 JSON 缓存
+（`.workout-cache.json`）会在首次运行时自动迁移进 SQLite 并重命名为
+`.workout-cache.json.migrated` 留档。预览：
+
+```zsh
+.venv/bin/python epd_status.py --mode workout --dry-run
+```
 
 卸载定时任务：
 
