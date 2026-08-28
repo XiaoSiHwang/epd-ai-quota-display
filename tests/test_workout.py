@@ -142,7 +142,7 @@ class SummarizeMonthTests(unittest.TestCase):
 class CacheTests(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.TemporaryDirectory()
-        self.cache_path = Path(self.tmpdir.name) / ".workout-cache.db"
+        self.cache_path = Path(self.tmpdir.name) / "workout-cache.db"
 
     def tearDown(self):
         self.tmpdir.cleanup()
@@ -285,31 +285,6 @@ class FetchTests(unittest.IsolatedAsyncioTestCase):
                     oldest=dt(2026, 8, 1).date(),
                     newest=dt(2026, 8, 28).date(),
                 )
-
-    async def test_fetch_athletes_discovers_id(self):
-        from workout_data import fetch_athlete_id_async
-
-        captured = {}
-
-        def fake_urlopen(request, timeout):
-            captured["url"] = request.full_url
-            body = json.dumps([{"id": "i113469", "name": "Eddie"}]).encode()
-            return _FakeResponse(body)
-
-        with patch("workout_data._https_urlopen", side_effect=fake_urlopen):
-            athlete_id = await fetch_athlete_id_async(api_key="k")
-        self.assertEqual(athlete_id, "i113469")
-        self.assertIn("/api/v1/athletes", captured["url"])
-
-    async def test_fetch_athletes_empty_raises(self):
-        from workout_data import fetch_athlete_id_async
-
-        def fake_urlopen(request, timeout):
-            return _FakeResponse(b"[]")
-
-        with patch("workout_data._https_urlopen", side_effect=fake_urlopen):
-            with self.assertRaises(WorkoutDataError):
-                await fetch_athlete_id_async(api_key="k")
 
 
 class _FakeResponse:

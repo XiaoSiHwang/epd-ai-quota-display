@@ -52,6 +52,14 @@ def validate_rotation_config(config: dict):
             raise RuntimeError(
                 "rotation.pages includes 'workout' but workout.api_key is missing."
             )
+        if not workout.get("athlete_id"):
+            # /api/v1/athletes lists friends too, so the id cannot be guessed
+            # reliably; the owner must state it explicitly.
+            raise RuntimeError(
+                "rotation.pages includes 'workout' but workout.athlete_id is missing. "
+                "Find it in the intervals.icu web UI (Settings or profile URL) or via "
+                "GET /api/v1/athletes."
+            )
         try:
             goal = workout.get("monthly_goal")
             if goal is not None:

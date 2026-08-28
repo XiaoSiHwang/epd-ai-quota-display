@@ -466,7 +466,8 @@ Keep 风格的月度训练日历：
 - 右侧为周日～周六 7 列点阵：训练过的日期画红点，今天有外圈标记；
 - 数据来自 [intervals.icu](https://intervals.icu/api-docs.html)，在
   `config.json` 中配置 `workout.api_key`（intervals.icu 的 Settings →
-  API Keys 生成）；`athlete_id` 可省略，首次运行自动发现；
+  API Keys 生成）和 `workout.athlete_id`（必填；在 intervals.icu 网页端
+  Settings 或个人主页 URL 中查看，形如 `i113469`）；
 - 默认所有活动类型都算训练，`workout.activity_types` 可配置白名单过滤；
 - 该接口同样需要外网，代理写入 `workout.proxy`（launchd 不继承终端环境变量）。
 

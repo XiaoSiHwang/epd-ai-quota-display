@@ -1253,7 +1253,6 @@ async def main():
         from workout_data import (
             WorkoutDataError,
             fetch_activities_async,
-            fetch_athlete_id_async,
             load_month_cache,
             merge_activities_into_cache,
             summarize_month,
@@ -1264,9 +1263,14 @@ async def main():
             if not api_key:
                 raise RuntimeError("workout.api_key is required for the workout page.")
             athlete_id = workout_config.get("athlete_id")
+            if not athlete_id:
+                raise RuntimeError(
+                    "workout.athlete_id is required for the workout page. "
+                    "Find it in the intervals.icu web UI (Settings or profile URL)."
+                )
             return {
                 "api_key": str(api_key),
-                "athlete_id": str(athlete_id) if athlete_id else None,
+                "athlete_id": str(athlete_id),
                 "goal": int(workout_config.get("monthly_goal", 20)),
                 "proxy": workout_config.get("proxy"),
                 "activity_types": (
@@ -1283,13 +1287,9 @@ async def main():
             first_of_month = today.replace(day=1)
             existing = load_month_cache(cache_path, today.year, today.month)
 
-            athlete_id = settings["athlete_id"]
-            if not athlete_id:
-                athlete_id = await fetch_athlete_id_async(
-                    api_key=settings["api_key"], proxy=settings["proxy"])
             try:
                 fresh = await fetch_activities_async(
-                    athlete_id=athlete_id,
+                    athlete_id=settings["athlete_id"],
                     api_key=settings["api_key"],
                     oldest=first_of_month,
                     newest=today,
@@ -1375,7 +1375,6 @@ async def main():
             from workout_data import (
                 WorkoutDataError,
                 fetch_activities_async,
-                fetch_athlete_id_async,
                 load_month_cache,
                 merge_activities_into_cache,
                 summarize_month,
@@ -1385,6 +1384,10 @@ async def main():
             workout_api_key = configured(None, "EPD_WORKOUT_API_KEY", workout_config.get("api_key"))
             if not workout_api_key:
                 print("Workout page skipped this round: workout.api_key is missing.")
+                raise SystemExit(1)
+            athlete_id = workout_config.get("athlete_id")
+            if not athlete_id:
+                print("Workout page skipped this round: workout.athlete_id is missing.")
                 raise SystemExit(1)
             workout_goal = int(workout_config.get("monthly_goal", 20))
             workout_proxy = workout_config.get("proxy")
@@ -1397,10 +1400,6 @@ async def main():
             today = datetime.now().astimezone().date()
             existing_activities = load_month_cache(workout_cache, today.year, today.month)
             try:
-                athlete_id = workout_config.get("athlete_id")
-                if not athlete_id:
-                    athlete_id = await fetch_athlete_id_async(
-                        api_key=str(workout_api_key), proxy=workout_proxy)
                 fresh_activities = await fetch_activities_async(
                     athlete_id=str(athlete_id),
                     api_key=str(workout_api_key),

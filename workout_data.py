@@ -338,32 +338,3 @@ async def fetch_activities_async(
     if not isinstance(payload, list):
         raise WorkoutDataError("intervals.icu returned an unexpected payload shape.")
     return parse_activities(payload)
-
-
-async def fetch_athlete_id_async(
-    *,
-    api_key: str,
-    proxy: str | None = None,
-    timeout_seconds: float = FETCH_TIMEOUT_SECONDS,
-) -> str:
-    """Discover the default athlete id via /api/v1/athletes (first entry)."""
-    loop = asyncio.get_running_loop()
-    url = f"{API_BASE}/api/v1/athletes"
-
-    def work():
-        request = Request(url, headers={
-            "Authorization": _basic_auth_header(api_key),
-            "Accept": "application/json",
-            "User-Agent": USER_AGENT,
-        })
-        with _open_with_optional_proxy(request, proxy=proxy,
-                                       timeout=timeout_seconds) as response:
-            return json.loads(response.read())
-
-    try:
-        payload = await asyncio.wait_for(loop.run_in_executor(None, work), timeout=timeout_seconds + 5)
-    except Exception as exc:
-        raise WorkoutDataError(f"intervals.icu athlete lookup failed: {exc}") from exc
-    if isinstance(payload, list) and payload and isinstance(payload[0], dict) and payload[0].get("id"):
-        return str(payload[0]["id"])
-    raise WorkoutDataError("intervals.icu returned no athlete for this API key.")

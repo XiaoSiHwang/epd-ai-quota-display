@@ -166,12 +166,22 @@ class RotationConfigValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "workout.api_key"):
             validate_rotation_config(config)
 
-    def test_workout_page_with_api_key_passes(self):
+    def test_workout_page_without_athlete_id_rejected(self):
         from rotation_state import validate_rotation_config
         config = {
             "display_mode": "rotation",
             "rotation": {"pages": ["workout"]},
             "workout": {"api_key": "secret"},
+        }
+        with self.assertRaisesRegex(RuntimeError, "workout.athlete_id"):
+            validate_rotation_config(config)
+
+    def test_workout_page_with_api_key_and_athlete_id_passes(self):
+        from rotation_state import validate_rotation_config
+        config = {
+            "display_mode": "rotation",
+            "rotation": {"pages": ["workout"]},
+            "workout": {"api_key": "secret", "athlete_id": "i113469"},
         }
         validate_rotation_config(config)  # should not raise
 
@@ -180,7 +190,7 @@ class RotationConfigValidationTests(unittest.TestCase):
         config = {
             "display_mode": "rotation",
             "rotation": {"pages": ["workout"]},
-            "workout": {"api_key": "secret", "monthly_goal": 0},
+            "workout": {"api_key": "secret", "athlete_id": "i113469", "monthly_goal": 0},
         }
         with self.assertRaisesRegex(RuntimeError, "monthly_goal"):
             validate_rotation_config(config)
@@ -190,7 +200,7 @@ class RotationConfigValidationTests(unittest.TestCase):
         config = {
             "display_mode": "rotation",
             "rotation": {"pages": ["workout"]},
-            "workout": {"api_key": "secret", "monthly_goal": "many"},
+            "workout": {"api_key": "secret", "athlete_id": "i113469", "monthly_goal": "many"},
         }
         with self.assertRaisesRegex(RuntimeError, "monthly_goal"):
             validate_rotation_config(config)
