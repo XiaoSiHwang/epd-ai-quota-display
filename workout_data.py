@@ -13,6 +13,7 @@ import asyncio
 import base64
 import calendar
 import json
+import math
 import sqlite3
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -98,6 +99,12 @@ def parse_activities(payload: list[dict]) -> list[WorkoutActivity]:
     return activities
 
 
+def _round_half_up(value: float, digits: int = 1) -> float:
+    """四舍五入 (half-up); Python's round() is banker's rounding."""
+    factor = 10 ** digits
+    return math.floor(value * factor + 0.5) / factor
+
+
 def summarize_month(
     activities: list[WorkoutActivity],
     *,
@@ -120,6 +127,8 @@ def summarize_month(
 
     workout_count = 0
     trained_days: set[int] = set()
+    total_distance_m = 0.0
+    has_distance = False
     for act in activities:
         if allowed is not None and act.type not in allowed:
             continue
@@ -127,6 +136,9 @@ def summarize_month(
             continue
         workout_count += 1
         trained_days.add(act.day.day)
+        if act.distance > 0:
+            has_distance = True
+            total_distance_m += act.distance
 
     streak = 0
     probe = today
@@ -147,6 +159,9 @@ def summarize_month(
         "workout_count": workout_count,
         "streak": streak,
         "trained_days": trained_days,
+        "total_distance_km": (
+            _round_half_up(total_distance_m / 1000.0, 1) if has_distance else None
+        ),
     }
 
 

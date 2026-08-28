@@ -138,6 +138,45 @@ class SummarizeMonthTests(unittest.TestCase):
         )
         self.assertEqual(summary["streak"], 3)
 
+    def test_total_distance_km_sums_with_half_up_rounding(self):
+        """Distances (meters) sum to KM, rounded half-up to 1 decimal.
+
+        5000 + 3250 = 8250 m = 8.25 km -> 8.3 (half-up; banker's would say 8.2).
+        """
+        activities = parse_activities([
+            _activity(1, distance=5000.0),
+            _activity(2, distance=3250.0),
+        ])
+        summary = summarize_month(
+            activities, year=2026, month=8,
+            today=dt(2026, 8, 2).date(),
+        )
+        self.assertEqual(summary["total_distance_km"], 8.3)
+
+    def test_total_distance_km_none_when_no_distance_workouts(self):
+        """Pure strength month: no distance data -> stat falls back to None."""
+        activities = parse_activities([
+            _activity(1, atype="WeightTraining", distance=0.0),
+            _activity(2, atype="WeightTraining", distance=0.0),
+        ])
+        summary = summarize_month(
+            activities, year=2026, month=8,
+            today=dt(2026, 8, 2).date(),
+        )
+        self.assertIsNone(summary["total_distance_km"])
+
+    def test_total_distance_km_ignores_out_of_month(self):
+        activities = parse_activities([
+            _activity(1, distance=1000.0),
+            {"id": "july", "start_date_local": "2026-07-31T07:00:00",
+             "type": "Run", "moving_time": 600, "distance": 90000.0},
+        ])
+        summary = summarize_month(
+            activities, year=2026, month=8,
+            today=dt(2026, 8, 1).date(),
+        )
+        self.assertEqual(summary["total_distance_km"], 1.0)
+
 
 class CacheTests(unittest.TestCase):
     def setUp(self):

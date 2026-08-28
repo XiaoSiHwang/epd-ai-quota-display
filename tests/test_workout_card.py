@@ -51,6 +51,7 @@ class BuildWorkoutCardTests(unittest.TestCase):
         "workout_count": 9,
         "streak": 3,
         "trained_days": {1, 2, 4, 6, 12, 13, 14, 20, 28},
+        "total_distance_km": 61.7,
     }
 
     def build(self, summary=None, goal=20, now=NOW):
@@ -233,3 +234,15 @@ class WorkoutDisplayStateTests(unittest.TestCase):
             workout_count=2, streak=2, trained_days={1, 2}, days=31,
             goal=20, fetched_at=NOW)
         self.assertNotEqual(before, after)
+
+    def test_state_includes_total_distance_km(self):
+        with_km = workout_display_state(
+            year=2026, month=8, workout_count=2, streak=2,
+            trained_days={1, 2}, days=31, goal=20, fetched_at=NOW,
+            total_distance_km=8.3)
+        without_km = workout_display_state(
+            year=2026, month=8, workout_count=2, streak=2,
+            trained_days={1, 2}, days=31, goal=20, fetched_at=NOW,
+            total_distance_km=None)
+        self.assertEqual(with_km["total_distance_km"], 8.3)
+        self.assertNotEqual(with_km, without_km)

@@ -46,6 +46,7 @@ def workout_display_state(
     days: int,
     goal: int,
     fetched_at: datetime,
+    total_distance_km: float | None = None,
 ) -> dict:
     """Comparable visible state for the workout page.
 
@@ -61,6 +62,7 @@ def workout_display_state(
         "trained_days": sorted(trained_days),
         "days": days,
         "goal": goal,
+        "total_distance_km": total_distance_km,
     }
 
 
@@ -158,8 +160,14 @@ def build_workout_card(
     black_draw.line((CANVAS_MARGIN, divider_y, 180, divider_y), fill=0, width=1)
     _centered_text(black_draw, 62, divider_y + 8, str(streak), stat_font)
     _centered_text(black_draw, 62, divider_y + 36, "连续训练", stat_label_font)
-    _centered_text(black_draw, 142, divider_y + 8, str(workout_count), stat_font)
-    _centered_text(black_draw, 142, divider_y + 36, "训练次数", stat_label_font)
+    total_km = summary.get("total_distance_km")
+    if total_km is not None:
+        # Distance-bearing month: show total KM (1 decimal) instead of count.
+        _centered_text(black_draw, 142, divider_y + 8, f"{total_km:.1f}", stat_font)
+        _centered_text(black_draw, 142, divider_y + 36, "总距离(KM)", stat_label_font)
+    else:
+        _centered_text(black_draw, 142, divider_y + 8, str(workout_count), stat_font)
+        _centered_text(black_draw, 142, divider_y + 36, "训练次数", stat_label_font)
 
     # ---- Right side: weekday header + calendar grid --------------------
     grid_right = width - CANVAS_MARGIN

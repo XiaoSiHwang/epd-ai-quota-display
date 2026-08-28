@@ -1282,7 +1282,7 @@ async def main():
         async def load_workout_summary():
             """Fetch this month's activities, cache them, degrade to cache on failure."""
             settings = resolve_workout_settings()
-            cache_path = Path(__file__).with_name(".workout-cache.db")
+            cache_path = Path(__file__).with_name("workout-cache.db")
             today = datetime.now().astimezone().date()
             first_of_month = today.replace(day=1)
             existing = load_month_cache(cache_path, today.year, today.month)
@@ -1318,6 +1318,7 @@ async def main():
             workout_count=summary["workout_count"], streak=summary["streak"],
             trained_days=summary["trained_days"], days=summary["days"],
             goal=goal, fetched_at=fetched_at,
+            total_distance_km=summary.get("total_distance_km"),
         )
         if unchanged(mode, display_state):
             return
@@ -1424,6 +1425,7 @@ async def main():
                 workout_count=summary["workout_count"], streak=summary["streak"],
                 trained_days=summary["trained_days"], days=summary["days"],
                 goal=workout_goal, fetched_at=fetched_at,
+                total_distance_km=summary.get("total_distance_km"),
             )
             if unchanged(candidate, display_state):
                 return
