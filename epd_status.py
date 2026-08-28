@@ -1278,7 +1278,7 @@ async def main():
         async def load_workout_summary():
             """Fetch this month's activities, cache them, degrade to cache on failure."""
             settings = resolve_workout_settings()
-            cache_path = Path(__file__).with_name(".workout-cache.json")
+            cache_path = Path(__file__).with_name(".workout-cache.db")
             today = datetime.now().astimezone().date()
             first_of_month = today.replace(day=1)
             existing = load_month_cache(cache_path, today.year, today.month)
@@ -1393,7 +1393,7 @@ async def main():
                 tuple(workout_config["activity_types"])
                 if workout_config.get("activity_types") else None
             )
-            workout_cache = Path(__file__).with_name(".workout-cache.json")
+            workout_cache = Path(__file__).with_name(".workout-cache.db")
             today = datetime.now().astimezone().date()
             existing_activities = load_month_cache(workout_cache, today.year, today.month)
             try:

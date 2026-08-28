@@ -12,3 +12,6 @@ sensor-reading.json
 .superpowers/
 .workout-cache.json
 .workout-cache.json.tmp
+.workout-cache.db
+.workout-cache.db-journal
+.workout-cache.json.migrated
