@@ -140,7 +140,9 @@ class BuildWorkoutCardTests(unittest.TestCase):
         )
         self.assertTrue(found, "day-1 circle not found under the Saturday column")
 
-    def test_today_ring_is_red_when_trained_black_when_not(self):
+    def test_today_is_solid_black_dot_when_untrained(self):
+        """Today (untrained) renders as a filled black dot; other untrained
+        days stay hollow."""
         import calendar as cal
         from workout_card import (
             CANVAS_MARGIN, DOT_RADIUS, GRID_LEFT, GRID_TOP, ROW_HEIGHT,
@@ -155,24 +157,38 @@ class BuildWorkoutCardTests(unittest.TestCase):
         col_span = (400 - CANVAS_MARGIN - GRID_LEFT) / 7
         cx = round(GRID_LEFT + col_span * (col + 0.5))
         cy = GRID_TOP + row * ROW_HEIGHT + DOT_RADIUS
-        band = 6  # sample box half-width around the today marker ring
 
-        def red_pixels_in_box(red_img):
-            return sum(
-                1 for x in range(cx - DOT_RADIUS - band, cx + DOT_RADIUS + band)
-                for y in range(cy - DOT_RADIUS - band, cy + DOT_RADIUS + band)
-                if 0 <= x < 400 and 0 <= y < 300 and red_img.getpixel((x, y)) == 0
-            )
+        summary = dict(self.SUMMARY, trained_days={27})  # today untrained
+        black, _, _ = self.build(summary=summary)
+        # Today center filled black (solid), unlike hollow untrained day 30.
+        self.assertEqual(black.getpixel((cx, cy)), 0, "today dot must be solid black")
+        first_weekday_30 = first_col + 30 - 1
+        row30, col30 = divmod(first_weekday_30, 7)
+        cx30 = round(GRID_LEFT + col_span * (col30 + 0.5))
+        cy30 = GRID_TOP + row30 * ROW_HEIGHT + DOT_RADIUS
+        self.assertEqual(black.getpixel((cx30, cy30)), 1, "other untrained days stay hollow")
+        # No outer marker ring beyond the dot radius.
+        self.assertEqual(black.getpixel((cx + DOT_RADIUS + 2, cy)), 1)
 
-        summary_trained = dict(self.SUMMARY, trained_days={today_day})
-        _, red_trained, _ = self.build(summary=summary_trained)
-        summary_untrained = dict(self.SUMMARY, trained_days={today_day - 1})
-        _, red_untrained, _ = self.build(summary=summary_untrained)
+    def test_today_is_red_dot_when_trained(self):
+        import calendar as cal
+        from workout_card import (
+            CANVAS_MARGIN, DOT_RADIUS, GRID_LEFT, GRID_TOP, ROW_HEIGHT,
+        )
 
-        self.assertGreater(red_pixels_in_box(red_trained), 0,
-                           "today marker ring must be red when today is trained")
-        self.assertEqual(red_pixels_in_box(red_untrained), 0,
-                         "today marker ring must not be red when today is untrained")
+        year, month = 2026, 8
+        today_day = 28
+        first_weekday, _ = cal.monthrange(year, month)
+        first_col = (first_weekday + 1) % 7
+        index = first_col + today_day - 1
+        row, col = divmod(index, 7)
+        col_span = (400 - CANVAS_MARGIN - GRID_LEFT) / 7
+        cx = round(GRID_LEFT + col_span * (col + 0.5))
+        cy = GRID_TOP + row * ROW_HEIGHT + DOT_RADIUS
+
+        summary = dict(self.SUMMARY, trained_days={today_day})
+        _, red, _ = self.build(summary=summary)
+        self.assertEqual(red.getpixel((cx, cy)), 0, "today must be a red dot when trained")
 
     def test_full_ring_track_drawn_even_at_zero_progress(self):
         """The progress ring shows a complete black circle even with 0 workouts."""

@@ -199,15 +199,16 @@ def build_workout_card(
             fill=0,
         )
 
-    # Today marker ring: red when today is trained, black otherwise
+    # Today marker: solid black dot when not yet trained today; once a
+    # workout lands, the red dot from the trained-day loop marks it.
     if today.year == year and today.month == month and 1 <= today.day <= days:
-        cx, cy = cell(today.day)
-        plane = red_draw if today.day in trained_days else black_draw
-        plane.ellipse(
-            (cx - DOT_RADIUS - 3, cy - DOT_RADIUS - 3,
-             cx + DOT_RADIUS + 3, cy + DOT_RADIUS + 3),
-            outline=0, width=1,
-        )
+        if today.day not in trained_days:
+            cx, cy = cell(today.day)
+            black_draw.ellipse(
+                (cx - DOT_RADIUS + 1, cy - DOT_RADIUS + 1,
+                 cx + DOT_RADIUS - 1, cy + DOT_RADIUS - 1),
+                fill=0,
+            )
 
     text_right(black_draw, width - CANVAS_MARGIN, 12,
                "UPD " + now.strftime("%H:%M"), upd_font)
