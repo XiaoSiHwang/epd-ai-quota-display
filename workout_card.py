@@ -15,18 +15,25 @@ from PIL import Image, ImageDraw, ImageOps
 
 from epd_status import font, text_right
 
-CANVAS_MARGIN = 20
+CANVAS_MARGIN = 16
 TITLE_FONT_SIZE = 34
-RING_FONT_SIZE = 30
-STAT_FONT_SIZE = 24
-STAT_LABEL_FONT_SIZE = 11
-WEEKDAY_FONT_SIZE = 12
+RING_FONT_SIZE = 26
+STAT_FONT_SIZE = 22
+STAT_LABEL_FONT_SIZE = 10
+WEEKDAY_FONT_SIZE = 11
 UPD_FONT_SIZE = 10
 
 WEEKDAY_LABELS = ("日", "一", "二", "三", "四", "五", "六")
 
 RING_STEPS = 240
 RING_WIDTH = 4
+RING_CENTER = (92, 138)
+RING_RADIUS = 48
+
+DOT_RADIUS = 9
+ROW_HEIGHT = 34
+GRID_LEFT = 206
+GRID_TOP = 76
 
 
 def workout_display_state(
@@ -92,19 +99,10 @@ def _fmt_month(year: int, month: int) -> str:
     return f"{month}月"
 
 
-def _draw_ring(draw: ImageDraw.ImageDraw, center: tuple[int, int], radius: int,
-               overall_ratio: float, *, from_ratio: float = 0.0,
-               to_ratio: float | None = None, width: int = RING_WIDTH):
-    """Draw a ring arc on the given plane.
-
-    Default draws the full circle up to overall_ratio (background track);
-    pass from_ratio/to_ratio to draw a highlighted arc segment.
-    """
-    start = from_ratio if to_ratio is not None else 0.0
-    end = overall_ratio if to_ratio is None else to_ratio
-    points = ring_progress_points(center=center, radius=radius, ratio=end)
-    skip = int(len(points) * start) if end > 0 else len(points)
-    for x, y in points[skip:]:
+def _draw_ring_arc(draw: ImageDraw.ImageDraw, center: tuple[int, int], radius: int,
+                   ratio: float, *, width: int = RING_WIDTH):
+    """Draw the arc from 12 o'clock clockwise covering `ratio` of the circle."""
+    for x, y in ring_progress_points(center=center, radius=radius, ratio=ratio):
         draw.ellipse((x - width // 2, y - width // 2,
                       x + width // 2, y + width // 2), fill=0)
 
@@ -141,58 +139,52 @@ def build_workout_card(
     trained_days: set[int] = summary["trained_days"]
 
     # ---- Left column: month title --------------------------------------
-    left_cx = 100
-    black_draw.text((CANVAS_MARGIN, 34), _fmt_month(year, month),
+    black_draw.text((CANVAS_MARGIN + 4, 30), _fmt_month(year, month),
                     font=title_font, fill=0)
 
     # ---- Left column: progress ring ------------------------------------
-    ring_center = (left_cx, 145)
-    ring_radius = 52
     ratio = (workout_count / goal) if goal > 0 else 0.0
-    _draw_ring(black_draw, ring_center, ring_radius, ratio)
-    # Completed portion of the ring is red for at-a-glance progress reading
-    _draw_ring(red_draw, ring_center, ring_radius, ratio,
-               from_ratio=0.0, to_ratio=ratio)
+    # Full track in black (visible even at zero progress) ...
+    _draw_ring_arc(black_draw, RING_CENTER, RING_RADIUS, 1.0)
+    # ... with the completed portion overdrawn in red.
+    _draw_ring_arc(red_draw, RING_CENTER, RING_RADIUS, ratio)
 
     ring_text = f"{workout_count}/{goal}"
-    _centered_text(black_draw, ring_center[0], ring_center[1] - 20,
+    _centered_text(black_draw, RING_CENTER[0], RING_CENTER[1] - 16,
                    ring_text, ring_font)
 
-    # ---- Left column: divider + stats ----------------------------------
-    divider_y = 248
+    # ---- Left column: divider + stats (kept inside the canvas) ----------
+    divider_y = 238
     black_draw.line((CANVAS_MARGIN, divider_y, 180, divider_y), fill=0, width=1)
-    _centered_text(black_draw, 65, divider_y + 12, str(streak), stat_font)
-    _centered_text(black_draw, 65, divider_y + 44, "连续训练", stat_label_font)
-    _centered_text(black_draw, 145, divider_y + 12, str(workout_count), stat_font)
-    _centered_text(black_draw, 145, divider_y + 44, "训练次数", stat_label_font)
+    _centered_text(black_draw, 62, divider_y + 8, str(streak), stat_font)
+    _centered_text(black_draw, 62, divider_y + 36, "连续训练", stat_label_font)
+    _centered_text(black_draw, 142, divider_y + 8, str(workout_count), stat_font)
+    _centered_text(black_draw, 142, divider_y + 36, "训练次数", stat_label_font)
 
     # ---- Right side: weekday header + calendar grid --------------------
-    grid_left = 218
     grid_right = width - CANVAS_MARGIN
     col_count = 7
-    col_span = (grid_right - grid_left) / col_count
-    col_centers = [round(grid_left + col_span * (i + 0.5)) for i in range(col_count)]
+    col_span = (grid_right - GRID_LEFT) / col_count
+    col_centers = [round(GRID_LEFT + col_span * (i + 0.5)) for i in range(col_count)]
 
     header_y = 40
     for i, label in enumerate(WEEKDAY_LABELS):
         _centered_text(black_draw, col_centers[i], header_y, label, weekday_font)
 
     first_weekday, last_day = calendar.monthrange(year, month)  # Monday=0
-    dot_radius = 11
-    row_height = 38
-    grid_top = 78
+    first_col = (first_weekday + 1) % 7  # Sunday-first column of day 1
     today = now.date()
 
     def cell(day: int) -> tuple[int, int]:
-        index = first_weekday + day - 1  # Sunday-based offset
+        index = first_col + day - 1  # Sunday-based offset
         row, col = divmod(index, col_count)
-        return col_centers[col], grid_top + row * row_height + dot_radius
+        return col_centers[col], GRID_TOP + row * ROW_HEIGHT + DOT_RADIUS
 
     # Outline circles for all days of the month (black plane)
     for day in range(1, days + 1):
         cx, cy = cell(day)
         black_draw.ellipse(
-            (cx - dot_radius, cy - dot_radius, cx + dot_radius, cy + dot_radius),
+            (cx - DOT_RADIUS, cy - DOT_RADIUS, cx + DOT_RADIUS, cy + DOT_RADIUS),
             outline=0, width=1,
         )
 
@@ -202,17 +194,18 @@ def build_workout_card(
             continue
         cx, cy = cell(day)
         red_draw.ellipse(
-            (cx - dot_radius + 1, cy - dot_radius + 1,
-             cx + dot_radius - 1, cy + dot_radius - 1),
+            (cx - DOT_RADIUS + 1, cy - DOT_RADIUS + 1,
+             cx + DOT_RADIUS - 1, cy + DOT_RADIUS - 1),
             fill=0,
         )
 
-    # Today marker: slightly thicker outline
+    # Today marker ring: red when today is trained, black otherwise
     if today.year == year and today.month == month and 1 <= today.day <= days:
         cx, cy = cell(today.day)
-        black_draw.ellipse(
-            (cx - dot_radius - 2, cy - dot_radius - 2,
-             cx + dot_radius + 2, cy + dot_radius + 2),
+        plane = red_draw if today.day in trained_days else black_draw
+        plane.ellipse(
+            (cx - DOT_RADIUS - 3, cy - DOT_RADIUS - 3,
+             cx + DOT_RADIUS + 3, cy + DOT_RADIUS + 3),
             outline=0, width=1,
         )
 
