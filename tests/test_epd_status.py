@@ -260,3 +260,39 @@ class BluetoothRetryTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ModeDispatchTests(unittest.IsolatedAsyncioTestCase):
+    """Regression: the calendar-agenda/calendar-sensor branches in main()
+    were swapped (agenda fell into the sensor body and vice versa)."""
+
+    async def _run_mode(self, mode, extra=None):
+        from epd_status import SensorReading, main
+        argv = ["epd_status.py", "--mode", mode, "--dry-run",
+                "--config", "/nonexistent/config.json",
+                "--output", "/tmp/dispatch-test.png"]
+        argv.extend(extra or [])
+        fake_windows = [{"label": "7 DAYS", "used": 10.0, "reset_at": None}]
+        reading = SensorReading(
+            temperature=23.0, humidity=55.0,
+            measured_at=datetime.now().astimezone(), source="test")
+        with patch("sys.argv", argv), \
+             patch("epd_status.fetch_codex_quota", return_value=fake_windows), \
+             patch("epd_status.fetch_today_calendar_events", return_value=[]), \
+             patch("epd_status.fetch_sensor_reading", return_value=reading) as sensor_fetch, \
+             patch("epd_status.build_calendar_agenda_card", wraps=build_calendar_agenda_card) as agenda_card, \
+             patch("epd_status.build_calendar_sensor_card", wraps=build_calendar_sensor_card) as sensor_card:
+            await main()
+        return agenda_card, sensor_card, sensor_fetch
+
+    async def test_calendar_agenda_mode_builds_agenda_card_not_sensor(self):
+        agenda_card, sensor_card, sensor_fetch = await self._run_mode("calendar-agenda")
+        agenda_card.assert_called_once()
+        sensor_card.assert_not_called()
+        sensor_fetch.assert_not_called()
+
+    async def test_calendar_sensor_mode_builds_sensor_card_not_agenda(self):
+        agenda_card, sensor_card, _ = await self._run_mode(
+            "calendar-sensor", extra=["--demo-sensor"])
+        sensor_card.assert_called_once()
+        agenda_card.assert_not_called()

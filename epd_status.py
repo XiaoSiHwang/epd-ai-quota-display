@@ -1238,16 +1238,6 @@ async def main():
         preview.save(output)
         await render_and_send(mode, display_state, black_image, red_image, output, [mode])
         return
-        black_image, red_image, preview = build_calendar_agenda_card(
-            args.width,
-            args.height,
-            weekly_window,
-            events,
-            now=card_now,
-        )
-        preview.save(output)
-        await render_and_send(mode, display_state, black_image, red_image, output, [mode])
-        return
     elif mode == "workout":
         from workout_card import build_workout_card, workout_display_state
         from workout_data import (
@@ -1491,7 +1481,7 @@ async def main():
         preview.save(output)
         await render_and_send(candidate, display_state, black_image, red_image, output, pages)
         return
-    elif mode == "calendar-sensor":
+    elif mode == "calendar-agenda":
         windows = fetch_codex_quota()
         weekly_window = weekly_quota_window(windows)
         remaining = 100 - weekly_window["used"]
@@ -1518,7 +1508,9 @@ async def main():
             now=card_now,
         )
         preview.save(output)
-    else:
+        await render_and_send(mode, display_state, black_image, red_image, output, [mode])
+        return
+    elif mode == "calendar-sensor":
         sensor_file = configured(args.sensor_file, "EPD_SENSOR_FILE", sensor_config.get("file"))
         if sensor_file and not Path(sensor_file).expanduser().is_absolute() and config_path.exists():
             sensor_file = str(config_path.resolve().parent / sensor_file)
