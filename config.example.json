@@ -4,6 +4,9 @@
     "pages": ["calendar-agenda", "stocks", "workout"],
     "interval_seconds": 300
   },
+  "glm": {
+    "api_key": "YOUR_BIGMODEL_API_KEY"
+  },
   "workout": {
     "datasource": "intervals.icu",
     "api_key": "YOUR_INTERVALS_ICU_API_KEY",

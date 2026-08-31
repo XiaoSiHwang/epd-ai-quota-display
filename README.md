@@ -48,6 +48,7 @@ nRF52811 电子价签。设备独立日历温度模式需要刷入本项目配�
 | **无变化不刷新** | 日期、周配额和今日日程均未变化时跳过 BLE 写入，减少闪屏和全刷次数。 |
 | **页面轮播** | `config.json` 的 `rotation.pages` 决定参与轮播的页面与顺序；每轮切向下一页，但页面可见内容未变时跳过写屏 —— 休市时段自然停住，减少闪屏。股票页数据来自 Yahoo Finance。 |
 | **运动日历** | 从 [intervals.icu](https://intervals.icu/api-docs.html) 拉取当月运动记录，渲染 Keep 风格月度训练日历：完成度圆环（本月次数 / 月度目标）、连续训练天数、总次数，训练日以红点标记。数据缓存在本地 SQLite（`.workout-cache.db`），接口失败时自动降级读缓存。 |
+| **Codex + GLM 配额页** | `quota_glm` 模式：上半区显示 CODEX 两个窗口（5 小时 / 7 天），下半区显示 GLM Coding Plan（智谱）两个窗口与套餐等级。`config.json` 配置 `glm.api_key`（bigmodel.cn 控制台 API Keys 页获取），环境变量 `EPD_GLM_API_KEY` 可覆盖；GLM 获取失败时下半区显示 NOT CONNECTED，页面仍展示 Codex 数据。 |
 | **完整中文教程** | 包含安装、BLE 协议、空白屏排查、实际验证记录和最终 HTML 设计稿。 |
 
 ## 显示内容
@@ -489,6 +490,26 @@ Keep 风格的月度训练日历：
 
 卸载脚本只注销 LaunchAgent 并删除安装到 `~/Library/LaunchAgents` 的 plist，
 不会删除项目、虚拟环境或日志。
+
+### Codex + GLM 配额页
+
+`rotation.pages` 中加入 `"quota_glm"`（或单独 `--mode quota_glm`）即可显示
+双供应商配额页：
+
+- 上半区为 CODEX 的 5 小时 / 7 天窗口（数据来源与 `quota` 页相同）；
+- 下半区为 GLM Coding Plan（智谱）的 5 小时 / 每周窗口，标题附带套餐等级
+  （如 `GLM · PRO`）；
+- `config.json` 中配置 `glm.api_key`（智谱开放平台 bigmodel.cn 控制台
+  API Keys 页生成；轮播校验会在缺 key 时直接报错），环境变量
+  `EPD_GLM_API_KEY` 可覆盖；
+- 配额用量接口为智谱订阅查询端点，国内直连无需代理；GLM 获取失败时下半区
+  显示 NOT CONNECTED，页面仍发送 Codex 数据，下次轮询恢复后自动刷新。
+
+本地预览：
+
+```zsh
+.venv/bin/python epd_status.py --mode quota_glm --dry-run
+```
 
 ### 修改更新间隔
 

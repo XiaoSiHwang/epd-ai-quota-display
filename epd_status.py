@@ -1178,7 +1178,7 @@ async def read_device_info(device):
 async def main():
     parser = argparse.ArgumentParser(description="Render quota, calendar/agenda, or calendar/sensor cards for an EPD-nRF5 display.")
     parser.add_argument("--config", default="config.json", help="optional JSON configuration file")
-    parser.add_argument("--mode", choices=("quota", "calendar-agenda", "calendar-sensor", "rotation", "workout"), help="display layout")
+    parser.add_argument("--mode", choices=("quota", "quota_glm", "calendar-agenda", "calendar-sensor", "rotation", "workout"), help="display layout")
     parser.add_argument("--name-prefix", default="NRF_EPD", help="advertised BLE name prefix")
     parser.add_argument("--width", type=int, default=400)
     parser.add_argument("--height", type=int, default=300)
@@ -1235,6 +1235,9 @@ async def main():
     workout_config = config.get("workout") or {}
     if not isinstance(workout_config, dict):
         raise RuntimeError("The workout configuration must be a JSON object.")
+    glm_config = config.get("glm") or {}
+    if not isinstance(glm_config, dict):
+        raise RuntimeError("The glm configuration must be a JSON object.")
 
     def configured(cli_value, env_name: str, config_value, default=None):
         if cli_value is not None:
@@ -1246,7 +1249,7 @@ async def main():
         return default
 
     mode = configured(args.mode, "EPD_DISPLAY_MODE", config.get("display_mode"), "quota")
-    if mode not in ("quota", "calendar-agenda", "calendar-sensor", "rotation", "workout"):
+    if mode not in ("quota", "quota_glm", "calendar-agenda", "calendar-sensor", "rotation", "workout"):
         raise RuntimeError(f"Unsupported display mode: {mode}")
 
     output = Path(args.output).expanduser() if args.output else Path(__file__).with_name("test-card.png")
@@ -1302,6 +1305,37 @@ async def main():
         if unchanged(mode, display_state):
             return
         black_image, red_image, preview = build_quota_card(args.width, args.height, windows)
+        preview.save(output)
+        await render_and_send(mode, display_state, black_image, red_image, output, [mode])
+        return
+    elif mode == "quota_glm":
+        glm_api_key = configured(None, "EPD_GLM_API_KEY", glm_config.get("api_key"))
+        if not glm_api_key:
+            raise RuntimeError(
+                "glm.api_key is required for the quota_glm page. "
+                "Get it from the bigmodel.cn console (API Keys page)."
+            )
+        windows = fetch_codex_quota()
+        print("Fetched Codex usage windows: " + ", ".join(
+            f"{window['label']} {100 - window['used']:.0f}% left" for window in windows
+        ))
+        glm_windows: list[dict] | None = None
+        glm_level: str | None = None
+        try:
+            from glm_data import fetch_glm_quota
+            glm = fetch_glm_quota(glm_api_key)
+            glm_windows = glm["windows"]
+            glm_level = glm["level"]
+            print("Fetched GLM usage windows: " + ", ".join(
+                f"{window['label']} {100 - window['used']:.0f}% left" for window in glm_windows
+            ) + f" (level: {glm_level})")
+        except Exception as exc:
+            print(f"GLM quota fetch failed; rendering NOT CONNECTED for the GLM section: {exc}")
+        display_state = quota_glm_display_state(windows, glm_windows, glm_level)
+        if unchanged(mode, display_state):
+            return
+        black_image, red_image, preview = build_quota_glm_card(
+            args.width, args.height, windows, glm_windows, glm_level)
         preview.save(output)
         await render_and_send(mode, display_state, black_image, red_image, output, [mode])
         return
@@ -1512,6 +1546,29 @@ async def main():
             card_now = datetime.now().astimezone()
             display_state = calendar_agenda_display_state(weekly_window, events, card_now)
             render = build_calendar_agenda_card(args.width, args.height, weekly_window, events, now=card_now)
+        elif candidate == "quota_glm":
+            glm_api_key = configured(None, "EPD_GLM_API_KEY", glm_config.get("api_key"))
+            if not glm_api_key:
+                print("GLM page skipped this round: glm.api_key is missing.")
+                raise SystemExit(1)
+            windows = fetch_codex_quota()
+            print("Fetched Codex usage windows: " + ", ".join(
+                f"{window['label']} {100 - window['used']:.0f}% left" for window in windows
+            ))
+            glm_windows: list[dict] | None = None
+            glm_level: str | None = None
+            try:
+                from glm_data import fetch_glm_quota
+                glm = fetch_glm_quota(glm_api_key)
+                glm_windows = glm["windows"]
+                glm_level = glm["level"]
+                print("Fetched GLM usage windows: " + ", ".join(
+                    f"{window['label']} {100 - window['used']:.0f}% left" for window in glm_windows
+                ) + f" (level: {glm_level})")
+            except Exception as exc:
+                print(f"GLM quota fetch failed; rendering NOT CONNECTED for the GLM section: {exc}")
+            display_state = quota_glm_display_state(windows, glm_windows, glm_level)
+            render = build_quota_glm_card(args.width, args.height, windows, glm_windows, glm_level)
         else:  # calendar-sensor
             sensor_file = configured(args.sensor_file, "EPD_SENSOR_FILE", sensor_config.get("file"))
             if sensor_file and not Path(sensor_file).expanduser().is_absolute() and config_path.exists():
