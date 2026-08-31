@@ -506,6 +506,44 @@ def quota_display_state(windows: list[dict]) -> dict:
         "mode": "quota",
         "windows": visible_windows,
     }
+def quota_glm_display_state(
+    codex_windows: list[dict],
+    glm_windows: list[dict] | None,
+    glm_level: str | None,
+) -> dict:
+    """Visible-state fingerprint for the quota_glm page.
+
+    GLM failure renders as glm=[None, None] + glm_level=None, which is
+    guaranteed to differ from any recovered state so the unchanged() dedup
+    triggers a refresh after recovery.
+    """
+    def visible(windows: list[dict] | None) -> list[dict | None]:
+        if windows is None:
+            return [None, None]
+        by_label = {window["label"]: window for window in windows}
+        visible = []
+        for label in ("5 HOURS", "7 DAYS"):
+            window = by_label.get(label)
+            if window is None:
+                visible.append(None)
+                continue
+            remaining = max(0.0, min(100.0, 100.0 - window["used"]))
+            visible.append({
+                "label": label,
+                "remaining": f"{remaining:.0f}",
+                "reset": reset_label(window),
+            })
+        return visible
+
+    return {
+        "version": DISPLAY_STATE_VERSION,
+        "mode": "quota-glm",
+        "codex": visible(codex_windows),
+        "glm": visible(glm_windows),
+        "glm_level": glm_level,
+    }
+
+
 
 
 def calendar_sensor_display_state(reading: SensorReading, location: str, now: datetime) -> dict:

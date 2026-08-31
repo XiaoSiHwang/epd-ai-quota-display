@@ -139,6 +139,21 @@ class RotationConfigValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "stocks.indices"):
             validate_rotation_config(config)
 
+    def test_quota_glm_page_requires_glm_api_key(self):
+        from rotation_state import validate_rotation_config
+        config = {"display_mode": "rotation", "rotation": {"pages": ["quota_glm"]}}
+        with self.assertRaisesRegex(RuntimeError, "glm.api_key"):
+            validate_rotation_config(config)
+
+    def test_quota_glm_page_with_api_key_passes(self):
+        from rotation_state import validate_rotation_config
+        config = {
+            "display_mode": "rotation",
+            "rotation": {"pages": ["quota_glm"]},
+            "glm": {"api_key": "some-key"},
+        }
+        validate_rotation_config(config)  # should not raise
+
     def test_invalid_index_entry_rejected(self):
         from rotation_state import validate_rotation_config
         config = self._valid_config()

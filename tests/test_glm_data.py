@@ -139,3 +139,36 @@ class TestParseUnitClassification:
         ])
         assert result["windows"][0]["label"] == "5 HOURS"
         assert result["windows"][0]["used"] == 33.0
+
+
+class TestQuotaGlmDisplayState:
+    def test_state_shape_and_mode(self):
+        from epd_status import quota_glm_display_state
+        codex = [
+            {"label": "5 HOURS", "used": 1, "reset_at": 1_800_000_000},
+            {"label": "7 DAYS", "used": 26, "reset_at": 1_800_086_400},
+        ]
+        glm = [
+            {"label": "5 HOURS", "used": 0, "reset_at": 1_800_100_000},
+            {"label": "7 DAYS", "used": 17, "reset_at": 1_800_200_000},
+        ]
+        state = quota_glm_display_state(codex, glm, "pro")
+        assert state["mode"] == "quota-glm"
+        assert state["glm_level"] == "pro"
+        assert state["codex"][0]["remaining"] == "99"
+        assert state["glm"][0]["remaining"] == "100"
+
+    def test_glm_failure_state_differs_from_recovery(self):
+        from epd_status import quota_glm_display_state
+        codex = [
+            {"label": "5 HOURS", "used": 1, "reset_at": 1_800_000_000},
+            {"label": "7 DAYS", "used": 26, "reset_at": 1_800_086_400},
+        ]
+        failed = quota_glm_display_state(codex, None, None)
+        glm = [
+            {"label": "5 HOURS", "used": 0, "reset_at": 1_800_100_000},
+            {"label": "7 DAYS", "used": 17, "reset_at": 1_800_200_000},
+        ]
+        recovered = quota_glm_display_state(codex, glm, "pro")
+        assert failed != recovered
+        assert failed["glm"] == [None, None]

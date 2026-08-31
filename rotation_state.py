@@ -6,7 +6,7 @@ Constants live here so every consumer imports one source of truth.
 import json
 from pathlib import Path
 
-VALID_PAGE_IDS = ("quota", "calendar-agenda", "calendar-sensor", "stocks", "workout")
+VALID_PAGE_IDS = ("quota", "quota_glm", "calendar-agenda", "calendar-sensor", "stocks", "workout")
 DISPLAY_STATE_VERSION = 2
 
 
@@ -68,6 +68,16 @@ def validate_rotation_config(config: dict):
             raise RuntimeError("workout.monthly_goal must be an integer.") from exc
         if goal is not None and int(goal) <= 0:
             raise RuntimeError("workout.monthly_goal must be a positive integer.")
+
+    if "quota_glm" in pages:
+        glm = config.get("glm") or {}
+        if not isinstance(glm, dict):
+            raise RuntimeError("The glm configuration must be a JSON object.")
+        if not glm.get("api_key"):
+            raise RuntimeError(
+                "rotation.pages includes 'quota_glm' but glm.api_key is missing. "
+                "Get it from the bigmodel.cn console (API Keys page)."
+            )
 
     try:
         interval = rotation.get("interval_seconds")
