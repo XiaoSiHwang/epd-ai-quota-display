@@ -571,7 +571,19 @@ def _format_state_number(value: float | None) -> str | None:
     return f"{value:.2f}"
 
 
-def build_quota_card(width: int, height: int, windows: list[dict]) -> tuple[Image.Image, Image.Image, Image.Image]:
+def _build_dual_quota_card(
+    width: int,
+    height: int,
+    codex_windows: list[dict],
+    glm_provider: dict | None = None,
+) -> tuple[Image.Image, Image.Image, Image.Image]:
+    """Draw the dual-provider quota card.
+
+    glm_provider=None keeps the legacy CLAUDE CODE placeholder section so the
+    existing quota page stays pixel-identical. Otherwise glm_provider carries
+    {"name": str, "windows": list[dict] | None, "connected": bool} and the
+    bottom half renders the same two-column layout as the CODEX half.
+    """
     if (width, height) != (400, 300):
         raise ValueError("The approved quota layout currently targets the 400x300 panel.")
 
@@ -592,10 +604,10 @@ def build_quota_card(width: int, height: int, windows: list[dict]) -> tuple[Imag
     red_draw.text((350, 14), "LIVE", font=label_font, fill=0)
     black_draw.line((18, 42, 382, 42), fill=0, width=2)
 
-    by_label = {window["label"]: window for window in windows}
+    by_label = {window["label"]: window for window in codex_windows}
     # Do not duplicate the only returned window into both columns. The usage
     # endpoint can temporarily omit one rate-limit window around a reset.
-    codex_windows = [by_label.get("5 HOURS"), by_label.get("7 DAYS")]
+    codex_slots = [by_label.get("5 HOURS"), by_label.get("7 DAYS")]
 
     def provider_section(name: str, top: int, active_windows: list[dict] | None):
         title_draw = black_draw if active_windows is not None else red_draw
@@ -632,9 +644,21 @@ def build_quota_card(width: int, height: int, windows: list[dict]) -> tuple[Imag
                 draw_dashed_box(red_draw, (x1, top + 65, x2, top + 72), fill=0)
                 black_draw.text((x1, top + 74), "awaiting account", font=meta_font, fill=0)
 
-    provider_section("CODEX", 51, codex_windows)
+    def glm_slots(windows: list[dict]) -> list[dict | None]:
+        by_label = {window["label"]: window for window in windows}
+        return [by_label.get("5 HOURS"), by_label.get("7 DAYS")]
+
+    provider_section("CODEX", 51, codex_slots)
     black_draw.line((18, 146, 382, 146), fill=0)
-    provider_section("CLAUDE CODE", 154, None)
+
+    if glm_provider is None:
+        provider_section("CLAUDE CODE", 154, None)
+    elif glm_provider.get("connected"):
+        name = glm_provider["name"]
+        glm_windows = glm_provider.get("windows") or []
+        provider_section(name, 154, glm_slots(glm_windows))
+    else:
+        provider_section("NOT CONNECTED", 154, None)
 
     black_draw.line((18, 267, 382, 267), fill=0)
     black_draw.text((18, 274), datetime.now().strftime("UPDATED %Y-%m-%d %H:%M"), font=meta_font, fill=0)
@@ -644,6 +668,28 @@ def build_quota_card(width: int, height: int, windows: list[dict]) -> tuple[Imag
     preview.paste((23, 21, 19), mask=ImageOps.invert(black.convert("L")))
     preview.paste((188, 46, 46), mask=ImageOps.invert(red.convert("L")))
     return black, red, preview
+
+
+def build_quota_card(width: int, height: int, windows: list[dict]) -> tuple[Image.Image, Image.Image, Image.Image]:
+    return _build_dual_quota_card(width, height, windows, glm_provider=None)
+
+
+def build_quota_glm_card(
+    width: int,
+    height: int,
+    codex_windows: list[dict],
+    glm_windows: list[dict] | None,
+    glm_level: str | None,
+) -> tuple[Image.Image, Image.Image, Image.Image]:
+    """Render the quota_glm page: CODEX on top, GLM below."""
+    if glm_windows is None:
+        glm_provider = {"name": "GLM", "windows": None, "connected": False}
+    else:
+        name = f"GLM · {glm_level.upper()}" if glm_level else "GLM"
+        glm_provider = {"name": name, "windows": glm_windows, "connected": True}
+    return _build_dual_quota_card(width, height, codex_windows, glm_provider)
+
+
 
 
 def build_calendar_sensor_card(
