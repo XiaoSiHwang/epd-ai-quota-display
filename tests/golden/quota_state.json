@@ -1,0 +1,16 @@
+{
+  "version": 2,
+  "mode": "quota",
+  "windows": [
+    {
+      "label": "5 HOURS",
+      "remaining": "99",
+      "reset": "resets 16:00"
+    },
+    {
+      "label": "7 DAYS",
+      "remaining": "74",
+      "reset": "resets 01-16 16:00"
+    }
+  ]
+}
