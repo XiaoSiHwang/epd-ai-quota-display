@@ -13,30 +13,13 @@ from pathlib import Path
 import sqlite3
 import subprocess
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, HTTPSHandler, build_opener, urlopen
+from urllib.request import Request
 
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 from calendar_data import calendar_label, holiday_marker, solar_to_lunar
+from http_utils import https_urlopen as _https_urlopen
 from rotation_state import DISPLAY_STATE_VERSION
-
-
-def _https_urlopen(request: Request, timeout: float):
-    """urlopen with certifi's CA bundle scoped to this request.
-
-    Framework Python 3.12 venvs ship without a usable system CA chain, which
-    breaks every urllib HTTPS call (Codex quota, sensor HTTP). yfinance relies
-    on requests/certifi and is unaffected — this evens that out without
-    touching the global ssl default context.
-    """
-    try:
-        import certifi
-        import ssl
-        context = ssl.create_default_context(cafile=certifi.where())
-        opener = build_opener(HTTPSHandler(context=context))
-    except ImportError:
-        opener = build_opener()
-    return opener.open(request, timeout=timeout)
 
 
 SERVICE_UUID = "62750001-d828-918d-fb46-b6c11c675aec"
