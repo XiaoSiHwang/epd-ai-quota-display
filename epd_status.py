@@ -665,11 +665,13 @@ def _build_dual_quota_card(
         provider_font = bold_font(17)
         label_font = bold_font(13)
         meta_font = bold_font(12)
+        reset_font = bold_font(15)
     else:
         panel_font = font(11)
         provider_font = font(14)
         label_font = font(11)
         meta_font = font(10)
+        reset_font = meta_font
 
     black_draw.text((18, 14), "AI QUOTA PANEL", font=panel_font, fill=0)
     red_draw.ellipse((339, 17, 345, 23), fill=0)
@@ -706,15 +708,15 @@ def _build_dual_quota_card(
                     fill_width = round((x2 - x1 - 2) * remaining / 100)
                     if fill_width > 0:
                         black_draw.rectangle((x1 + 1, bar_top + 1, x1 + fill_width, bar_top + 6), fill=0)
-                    black_draw.text((x1, top + 74), reset_label(window), font=meta_font, fill=0)
+                    black_draw.text((x1, top + 74), reset_label(window), font=reset_font, fill=0)
                 else:
                     text_right(black_draw, x2, top + 25, "—", number_font)
                     draw_dashed_box(black_draw, (x1, bar_top, x2, bar_top + 7), fill=0)
-                    black_draw.text((x1, top + 74), "unavailable", font=meta_font, fill=0)
+                    black_draw.text((x1, top + 74), "unavailable", font=reset_font, fill=0)
             else:
                 text_right(red_draw, x2, top + 25, "—", number_font)
                 draw_dashed_box(red_draw, (x1, top + 65, x2, top + 72), fill=0)
-                black_draw.text((x1, top + 74), "awaiting account", font=meta_font, fill=0)
+                black_draw.text((x1, top + 74), "awaiting account", font=reset_font, fill=0)
 
     def glm_slots(windows: list[dict]) -> list[dict | None]:
         by_label = {window["label"]: window for window in windows}
