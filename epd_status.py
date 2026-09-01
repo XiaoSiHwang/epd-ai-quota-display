@@ -620,6 +620,11 @@ def _format_state_number(value: float | None) -> str | None:
     return f"{value:.2f}"
 
 
+def _binarize(plane: Image.Image) -> Image.Image:
+    """Collapse an anti-aliased grayscale plane onto the 1-bit e-paper format."""
+    return plane.point(lambda pixel: 0 if pixel < 128 else 255).convert("1")
+
+
 def _build_dual_quota_card(
     width: int,
     height: int,
@@ -636,13 +641,20 @@ def _build_dual_quota_card(
 
     bold_large switches to the quota_glm typography: every text face becomes
     Semibold and one size larger, while the big percentage digits and their
-    "%" unit keep the original look.
+    "%" unit keep the original look. The card is drawn on an anti-aliased
+    grayscale canvas and binarized at the end — Pillow forces fontmode="1"
+    (AA off, patchy mono rasterization) on 1-bit canvases, which breaks up
+    the thin Semibold strokes at 12-17px.
     """
     if (width, height) != (400, 300):
         raise ValueError("The approved quota layout currently targets the 400x300 panel.")
 
-    black = Image.new("1", (width, height), 1)
-    red = Image.new("1", (width, height), 1)
+    if bold_large:
+        black = Image.new("L", (width, height), 255)
+        red = Image.new("L", (width, height), 255)
+    else:
+        black = Image.new("1", (width, height), 1)
+        red = Image.new("1", (width, height), 1)
     black_draw = ImageDraw.Draw(black)
     red_draw = ImageDraw.Draw(red)
 
@@ -723,6 +735,10 @@ def _build_dual_quota_card(
     black_draw.line((18, 267, 382, 267), fill=0)
     black_draw.text((18, 274), datetime.now().strftime("UPDATED %Y-%m-%d %H:%M"), font=meta_font, fill=0)
     text_right(black_draw, 382, 274, "AI QUOTA", meta_font)
+
+    if bold_large:
+        black = _binarize(black)
+        red = _binarize(red)
 
     preview = Image.new("RGB", (width, height), (251, 250, 246))
     preview.paste((23, 21, 19), mask=ImageOps.invert(black.convert("L")))
