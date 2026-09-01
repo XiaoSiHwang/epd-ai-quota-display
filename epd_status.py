@@ -61,6 +61,17 @@ def font(size: int):
     return ImageFont.load_default()
 
 
+def bold_font(size: int):
+    """Bold counterpart of font(): PingFang SC Semibold, regular face as fallback."""
+    candidate = "/System/Library/Fonts/PingFang.ttc"
+    if Path(candidate).exists():
+        try:
+            return ImageFont.truetype(candidate, size, index=8)
+        except OSError:
+            pass
+    return font(size)
+
+
 def window_label(seconds: int | None) -> str:
     return {
         18_000: "5 HOURS",
@@ -614,6 +625,7 @@ def _build_dual_quota_card(
     height: int,
     codex_windows: list[dict],
     glm_provider: dict | None = None,
+    bold_large: bool = False,
 ) -> tuple[Image.Image, Image.Image, Image.Image]:
     """Draw the dual-provider quota card.
 
@@ -621,6 +633,10 @@ def _build_dual_quota_card(
     existing quota page stays pixel-identical. Otherwise glm_provider carries
     {"name": str, "windows": list[dict] | None, "connected": bool} and the
     bottom half renders the same two-column layout as the CODEX half.
+
+    bold_large switches to the quota_glm typography: every text face becomes
+    Semibold and one size larger, while the big percentage digits and their
+    "%" unit keep the original look.
     """
     if (width, height) != (400, 300):
         raise ValueError("The approved quota layout currently targets the 400x300 panel.")
@@ -630,12 +646,18 @@ def _build_dual_quota_card(
     black_draw = ImageDraw.Draw(black)
     red_draw = ImageDraw.Draw(red)
 
-    panel_font = font(11)
-    provider_font = font(14)
-    label_font = font(11)
     number_font = font(33)
     percent_font = font(13)
-    meta_font = font(10)
+    if bold_large:
+        panel_font = bold_font(13)
+        provider_font = bold_font(17)
+        label_font = bold_font(13)
+        meta_font = bold_font(12)
+    else:
+        panel_font = font(11)
+        provider_font = font(14)
+        label_font = font(11)
+        meta_font = font(10)
 
     black_draw.text((18, 14), "AI QUOTA PANEL", font=panel_font, fill=0)
     red_draw.ellipse((339, 17, 345, 23), fill=0)
@@ -725,7 +747,7 @@ def build_quota_glm_card(
     else:
         name = f"GLM · {glm_level.upper()}" if glm_level else "GLM"
         glm_provider = {"name": name, "windows": glm_windows, "connected": True}
-    return _build_dual_quota_card(width, height, codex_windows, glm_provider)
+    return _build_dual_quota_card(width, height, codex_windows, glm_provider, bold_large=True)
 
 
 
